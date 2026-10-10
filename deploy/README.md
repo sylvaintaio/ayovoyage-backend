@@ -85,7 +85,11 @@ Règles d'écriture du fichier : **aucun commentaire en fin de ligne**, et **apo
 
 ## 4. Données de départ (au choix)
 
-**Base vide** (production réelle) : rien à faire. Créer ensuite la compagnie et le premier administrateur.
+**Base vide** (production réelle) : créer la compagnie et son premier administrateur, sur le serveur :
+```bash
+sudo -u busvoyage bash -c 'set -a; . /etc/busvoyage/api.env; set +a; /opt/busvoyage/bin/api create-company --name "Nom de la compagnie" --admin-email admin@exemple.com'
+```
+Le mot de passe est généré et affiché **une seule fois** : notez-le, connectez-vous sur `/admin/connexion`, activez la double authentification et changez le mot de passe. Options : `--admin-name`, `--admin-phone`, `--legal-name`, `--phone`, `--email`, `--slug`. Utilisez des guillemets droits `"…"`, pas `« … »`. L'administrateur crée ensuite les villes, agences, bus, lignes et départs dans le back-office.
 
 **Données de démonstration** générées (recette uniquement, refusé en `production`) :
 ```bash

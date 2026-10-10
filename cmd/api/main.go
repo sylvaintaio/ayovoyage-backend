@@ -93,10 +93,12 @@ func run(ctx context.Context, cmd string) error {
 		return printTicketKey(cfg)
 	case "sms-test":
 		return smsTest(ctx, cfg)
+	case "create-company":
+		return createCompany(ctx, cfg, os.Args[2:], os.Stdout)
 	case "serve":
 		return serve(ctx, cfg)
 	default:
-		return fmt.Errorf("commande inconnue %q (serve, migrate, seed, openapi, ticket-key, sms-test)", cmd)
+		return fmt.Errorf("commande inconnue %q (serve, migrate, seed, create-company, openapi, ticket-key, sms-test)", cmd)
 	}
 }
 
