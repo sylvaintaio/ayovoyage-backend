@@ -1,0 +1,23 @@
+# Secrets locaux : ne jamais versionner (modèle : .env.example)
+.env
+.env.*
+!.env.example
+
+# Binaires et sorties de build
+/bin/
+/api-server
+/busvoyage-api
+*.exe
+*.test
+*.out
+coverage.*
+
+# Exports et sauvegardes de base
+*.dump
+*.sql.gz
+/exports/
+
+# Éditeurs et système
+.idea/
+.vscode/
+.DS_Store
