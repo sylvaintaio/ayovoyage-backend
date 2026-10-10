@@ -37,6 +37,7 @@ scp -q "$BACKEND/bin/api-linux" "$VPS:/tmp/busvoyage-api"
 echo "→ Installation et redémarrage"
 ssh -t "$VPS" "
   set -e
+  export LC_ALL=C.UTF-8
   sudo install -o root -g root -m 755 /tmp/busvoyage-api /opt/busvoyage/bin/api.new
   [ -f /opt/busvoyage/bin/api ] && sudo cp /opt/busvoyage/bin/api /opt/busvoyage/bin/api.previous || true
   sudo mv /opt/busvoyage/bin/api.new /opt/busvoyage/bin/api

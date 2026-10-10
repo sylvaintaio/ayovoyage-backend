@@ -14,6 +14,9 @@
 # Le binaire de l'API est envoyé ensuite depuis votre ordinateur par deploy.sh.
 set -euo pipefail
 cd "$(dirname "$0")"
+# Le Mac transmet LC_CTYPE=UTF-8 par SSH, inconnu d'Ubuntu : évite les avertissements de perl/psql.
+export LC_ALL=C.UTF-8
+unset LC_CTYPE
 
 DOMAIN=${DOMAIN:-api.ayovoyage.sylvaintaio.com}
 PORT=${PORT:-8081}
