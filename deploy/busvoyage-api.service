@@ -1,0 +1,40 @@
+# /etc/systemd/system/busvoyage-api.service
+[Unit]
+Description=API Ayò Voyage
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=busvoyage
+Group=busvoyage
+EnvironmentFile=/etc/busvoyage/api.env
+ExecStart=/opt/busvoyage/bin/api serve
+Restart=always
+RestartSec=3
+# Laisse le temps de terminer les requêtes et tâches en cours.
+TimeoutStopSec=30
+KillSignal=SIGTERM
+
+# Limites : l'API consomme d'ordinaire 50 à 100 Mo.
+MemoryMax=512M
+LimitNOFILE=65536
+
+# Durcissement : aucun accès au reste du système.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

@@ -21,3 +21,6 @@ coverage.*
 .idea/
 .vscode/
 .DS_Store
+
+# Kit de déploiement : valeurs locales (SMTP, SMS) préparées par make-overrides.py
+/deploy/out/
