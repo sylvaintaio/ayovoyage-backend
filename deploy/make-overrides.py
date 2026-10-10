@@ -43,6 +43,10 @@ def quote(value):
 
 
 def main():
+    if len(sys.argv) > 1:
+        sys.exit('make-overrides.py ne prend aucun argument. Lancer deploy.sh dans une commande séparée :\n'
+                 '  python3 deploy/make-overrides.py\n'
+                 '  VPS=utilisateur@serveur ./deploy/deploy.sh --setup')
     if not os.path.exists(SOURCE):
         sys.exit(f'{SOURCE} introuvable')
     values = {}
