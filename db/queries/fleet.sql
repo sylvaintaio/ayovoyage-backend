@@ -76,15 +76,8 @@ RETURNING *;
 -- ============================ Lignes ============================
 
 -- name: ListRoutes :many
-SELECT sqlc.embed(r), oa.name AS origin_agency_name, da.name AS destination_agency_name,
-       oc.name AS origin_city, dc.name AS destination_city
-FROM routes r
-JOIN agencies oa ON oa.id = r.origin_agency_id
-JOIN cities oc ON oc.id = oa.city_id
-JOIN agencies da ON da.id = r.destination_agency_id
-JOIN cities dc ON dc.id = da.city_id
-WHERE r.company_id = $1
-ORDER BY r.name;
+-- Extrémités et noms des arrêts : voir ListRouteStops.
+SELECT * FROM routes WHERE company_id = $1 ORDER BY name;
 
 -- name: GetRoute :one
 SELECT * FROM routes WHERE id = $1 AND company_id = $2;

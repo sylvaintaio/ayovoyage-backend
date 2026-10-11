@@ -117,7 +117,7 @@ func (s *Service) changeCandidates(ctx context.Context, a changeActor, bookingID
 		if !pol.Change.Allowed {
 			return huma.Error409Conflict(pol.Change.Reason)
 		}
-		cur, err := q.GetDepartureCities(ctx, b.DepartureID)
+		cur, err := q.GetBookingTrip(ctx, b.ID)
 		if err != nil {
 			return err
 		}
@@ -126,7 +126,8 @@ func (s *Service) changeCandidates(ctx context.Context, a changeActor, bookingID
 			to = *pol.Change.WindowEnd
 		}
 		rows, err := q.ListChangeCandidates(ctx, store.ListChangeCandidatesParams{
-			CompanyID: b.CompanyID, OriginCityID: cur.OriginCityID, DestinationCityID: cur.DestinationCityID,
+			CompanyID: b.CompanyID, OriginCityID: cur.BoardingCityID, DestinationCityID: cur.AlightingCityID,
+			BoardingStopID: cur.BoardingStopID, AlightingStopID: cur.AlightingStopID,
 			ExcludeDepartureID: b.DepartureID, FromTs: from, ToTs: to, Passengers: pol.Change.Passengers,
 		})
 		for _, r := range rows {
@@ -219,23 +220,27 @@ func (s *Service) change(ctx context.Context, tx pgx.Tx, q *store.Queries, a cha
 	if !pol.Change.Allowed {
 		return store.Booking{}, quote, huma.Error409Conflict(pol.Change.Reason)
 	}
-	cur, err := q.GetDepartureCities(ctx, b.DepartureID)
+	if departureID == b.DepartureID {
+		return store.Booking{}, quote, huma.Error422UnprocessableEntity("Choisissez un départ différent de l'actuel")
+	}
+	cur, err := q.GetBookingTrip(ctx, b.ID)
 	if err != nil {
 		return store.Booking{}, quote, err
 	}
-	nd, err := q.GetDepartureCities(ctx, departureID)
+	// Même trajet sur le nouveau départ : mêmes villes de montée et de descente (mêmes arrêts si possible).
+	nd, err := q.FindTripOnDeparture(ctx, store.FindTripOnDepartureParams{DepartureID: departureID,
+		BoardingCityID: cur.BoardingCityID, AlightingCityID: cur.AlightingCityID,
+		BoardingStopID: cur.BoardingStopID, AlightingStopID: cur.AlightingStopID})
 	if database.IsNotFound(err) {
-		return store.Booking{}, quote, apix.NotFound("Départ")
+		return store.Booking{}, quote, huma.Error422UnprocessableEntity("Le nouveau départ doit desservir les mêmes villes de montée et de descente")
 	}
 	if err != nil {
 		return store.Booking{}, quote, err
 	}
 	switch {
-	case nd.ID == cur.ID:
-		return store.Booking{}, quote, huma.Error422UnprocessableEntity("Choisissez un départ différent de l'actuel")
-	case nd.CompanyID != b.CompanyID || nd.OriginCityID != cur.OriginCityID || nd.DestinationCityID != cur.DestinationCityID:
+	case nd.CompanyID != b.CompanyID:
 		return store.Booking{}, quote, huma.Error422UnprocessableEntity("Le nouveau départ doit être sur le même trajet et avec la même compagnie")
-	case nd.DepartureAt.After(*pol.Change.WindowEnd):
+	case nd.BoardingAt.After(*pol.Change.WindowEnd):
 		return store.Booking{}, quote, huma.Error422UnprocessableEntity("Le nouveau départ doit avoir lieu au plus tard le " + pol.Change.WindowEnd.In(localTZ).Format("02/01/2006"))
 	}
 
@@ -248,7 +253,9 @@ func (s *Service) change(ctx context.Context, tx pgx.Tx, q *store.Queries, a cha
 	if err != nil {
 		return store.Booking{}, quote, err
 	}
-	in := CreateInput{DepartureID: departureID, ContactName: b.ContactName, ContactPhone: b.ContactPhone}
+	boarding, alighting := int(nd.BoardingSeq), int(nd.AlightingSeq)
+	in := CreateInput{DepartureID: departureID, ContactName: b.ContactName, ContactPhone: b.ContactPhone,
+		BoardingSeq: &boarding, AlightingSeq: &alighting}
 	if b.BillingName != nil {
 		in.BillingName = *b.BillingName
 	}

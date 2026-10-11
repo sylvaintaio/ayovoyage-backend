@@ -72,8 +72,12 @@ func payLaterDeadline(ctx context.Context, q *store.Queries, b store.Booking, no
 	if err != nil {
 		return time.Time{}, co, err
 	}
+	boardingAt, err := q.BookingBoardingAt(ctx, b.ID)
+	if err != nil {
+		return time.Time{}, co, err
+	}
 	payBy := now.Add(time.Duration(co.PayLaterHoldHours) * time.Hour)
-	if limit := dep.DepartureAt.Add(-time.Duration(co.PayLaterCutoffMinutes) * time.Minute); limit.Before(payBy) {
+	if limit := boardingAt.Add(-time.Duration(co.PayLaterCutoffMinutes) * time.Minute); limit.Before(payBy) {
 		payBy = limit
 	}
 	if payBy.Sub(now) < minPayLaterWindow {

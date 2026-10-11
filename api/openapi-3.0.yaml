@@ -130,6 +130,11 @@ components:
           type: integer
         bus_id:
           type: string
+        crew:
+          description: Contrôleur, chauffeur et autres membres
+          items:
+            $ref: "#/components/schemas/CrewMember"
+          type: array
         departure_at:
           format: date-time
           type: string
@@ -139,6 +144,10 @@ components:
           type: string
         notes:
           type: string
+        peak_seats:
+          description: "Charge maximale sur un tronçon : places libres = seat_count - peak_seats (sold_seats compte les passagers, revente comprise)"
+          format: int32
+          type: integer
         plate_number:
           type: string
         route_id:
@@ -159,6 +168,11 @@ components:
             - arrived
             - cancelled
           type: string
+        stops:
+          description: Arrêts et heures prévues
+          items:
+            $ref: "#/components/schemas/DepartureStop"
+          type: array
       required:
         - id
         - route_id
@@ -173,6 +187,7 @@ components:
         - seat_count
         - sold_seats
         - boarded_seats
+        - peak_seats
       type: object
     Agency:
       additionalProperties: false
@@ -1776,6 +1791,11 @@ components:
         agency_id:
           description: "Par défaut : l'agence de l'employé"
           type: string
+        alighting_seq:
+          description: "Arrêt de descente. Absent : dernier arrêt"
+          format: int64
+          minimum: 1
+          type: integer
         billing_name:
           description: "Facture au nom d'une entreprise : raison sociale"
           maxLength: 160
@@ -1784,6 +1804,11 @@ components:
           description: IFU de l'entreprise
           maxLength: 30
           type: string
+        boarding_seq:
+          description: "Arrêt de montée (boarding_seq de la recherche). Absent : premier arrêt, ou l'agence du guichet"
+          format: int64
+          minimum: 0
+          type: integer
         contact_email:
           format: email
           maxLength: 254
@@ -1825,7 +1850,7 @@ components:
       additionalProperties: false
       properties:
         agent_id:
-          description: Convoyeur / agent d'embarquement
+          description: Contrôleur à bord (scanne et vend en route)
           type: string
         base_price:
           description: "Par défaut : tarif de la ligne"
@@ -1834,11 +1859,18 @@ components:
           type: integer
         bus_id:
           type: string
+        crew:
+          description: "Autres membres : second chauffeur, aide…"
+          items:
+            $ref: "#/components/schemas/CrewMemberInput"
+          maxItems: 6
+          type: array
         departure_at:
           description: Date et heure (RFC 3339, ex. 2026-10-12T07:00:00+01:00)
           format: date-time
           type: string
         driver_id:
+          description: Chauffeur
           type: string
         notes:
           maxLength: 1000
@@ -2087,6 +2119,7 @@ components:
       additionalProperties: false
       properties:
         agent_id:
+          description: Contrôleur à bord
           type: string
         base_price:
           description: "Par défaut : tarif de la ligne"
@@ -2095,6 +2128,11 @@ components:
           type: integer
         bus_id:
           type: string
+        crew:
+          items:
+            $ref: "#/components/schemas/CrewMemberInput"
+          maxItems: 6
+          type: array
         driver_id:
           type: string
         dry_run:
@@ -2170,6 +2208,11 @@ components:
     CreateInput:
       additionalProperties: false
       properties:
+        alighting_seq:
+          description: "Arrêt de descente. Absent : dernier arrêt"
+          format: int64
+          minimum: 1
+          type: integer
         billing_name:
           description: "Facture au nom d'une entreprise : raison sociale"
           maxLength: 160
@@ -2178,6 +2221,11 @@ components:
           description: IFU de l'entreprise
           maxLength: 30
           type: string
+        boarding_seq:
+          description: "Arrêt de montée (boarding_seq de la recherche). Absent : premier arrêt, ou l'agence du guichet"
+          format: int64
+          minimum: 0
+          type: integer
         contact_email:
           format: email
           maxLength: 254
@@ -2214,6 +2262,41 @@ components:
         - passengers
         - contact_name
         - contact_phone
+      type: object
+    CrewMember:
+      additionalProperties: false
+      properties:
+        full_name:
+          type: string
+        phone:
+          type: string
+        role:
+          enum:
+            - controller
+            - driver
+            - assistant
+          type: string
+        staff_id:
+          type: string
+      required:
+        - staff_id
+        - role
+        - full_name
+      type: object
+    CrewMemberInput:
+      additionalProperties: false
+      properties:
+        role:
+          description: "driver : second chauffeur ; assistant : aide, convoyeur…"
+          enum:
+            - driver
+            - assistant
+          type: string
+        staff_id:
+          type: string
+      required:
+        - staff_id
+        - role
       type: object
     CustomerParcel:
       additionalProperties: false
@@ -2363,20 +2446,33 @@ components:
     DepartureDetail:
       additionalProperties: false
       properties:
+        alighting_seq:
+          description: Indice de l'arrêt de descente
+          format: int64
+          type: integer
         arrival_eta:
+          description: Heure prévue à l'arrêt de descente
           format: date-time
           type: string
         available_seats:
           format: int32
           type: integer
         base_price:
-          description: Tarif Standard (XOF)
+          description: Prix Standard de ce trajet (XOF)
+          format: int64
+          type: integer
+        boarding_seq:
+          description: Indice de l'arrêt de montée (à renvoyer à la réservation)
           format: int64
           type: integer
         bus_amenities:
           items:
             type: string
           type: array
+        bus_departure_at:
+          description: Heure de départ du car (premier arrêt)
+          format: date-time
+          type: string
         bus_model:
           type: string
         categories:
@@ -2388,15 +2484,20 @@ components:
         company_name:
           type: string
         departure_at:
+          description: Heure prévue à l'arrêt de montée
           format: date-time
           type: string
         destination_agency_id:
+          description: Agence de descente, si l'arrêt en est une
           type: string
         destination_agency_name:
+          description: Arrêt de descente
           type: string
         destination_city:
+          description: Ville de descente
           type: string
         duration_minutes:
+          description: Durée du trajet du voyageur
           format: int32
           type: integer
         early_bird:
@@ -2408,12 +2509,15 @@ components:
           format: int32
           type: integer
         origin_agency_address:
+          description: Adresse de l'arrêt de montée
           type: string
         origin_agency_id:
+          description: Agence de montée
           type: string
         origin_agency_name:
           type: string
         origin_city:
+          description: Ville de montée
           type: string
         route_name:
           type: string
@@ -2422,10 +2526,17 @@ components:
           type: integer
         seat_map:
           $ref: "#/components/schemas/SeatMap"
+          description: États des sièges sur le trajet demandé
         status:
           type: string
+        stops:
+          description: "Arrêts du départ : montée possible si can_board, descente si can_alight"
+          items:
+            $ref: "#/components/schemas/DepartureStop"
+          type: array
       required:
         - origin_agency_address
+        - stops
         - categories
         - seat_map
         - id
@@ -2441,8 +2552,10 @@ components:
         - origin_agency_id
         - origin_agency_name
         - destination_city
-        - destination_agency_id
         - destination_agency_name
+        - boarding_seq
+        - alighting_seq
+        - bus_departure_at
         - bus_model
         - bus_amenities
         - seat_count
@@ -2475,6 +2588,51 @@ components:
         - seat_count
         - sold_seats
         - fill_rate
+      type: object
+    DepartureStop:
+      additionalProperties: false
+      properties:
+        address:
+          type: string
+        agency_id:
+          type: string
+        can_alight:
+          type: boolean
+        can_board:
+          type: boolean
+        city_id:
+          type: string
+        city_name:
+          type: string
+        latitude:
+          format: double
+          type: number
+        longitude:
+          format: double
+          type: number
+        pause_minutes:
+          format: int64
+          type: integer
+        scheduled_at:
+          format: date-time
+          type: string
+        seq:
+          format: int64
+          type: integer
+        stop_name:
+          type: string
+        stop_point_id:
+          type: string
+      required:
+        - seq
+        - stop_point_id
+        - stop_name
+        - city_id
+        - city_name
+        - scheduled_at
+        - pause_minutes
+        - can_board
+        - can_alight
       type: object
     DepartureSummary:
       additionalProperties: false
@@ -5015,11 +5173,14 @@ components:
       additionalProperties: false
       properties:
         base_price:
+          description: Prix complet, Standard (XOF)
           format: int64
           type: integer
         destination_agency_id:
+          description: Agence du dernier arrêt (absente si la ligne finit hors agence)
           type: string
         destination_agency_name:
+          description: Nom du dernier arrêt
           type: string
         destination_city:
           type: string
@@ -5029,6 +5190,10 @@ components:
         duration_minutes:
           format: int32
           type: integer
+        fares:
+          items:
+            $ref: "#/components/schemas/RouteFare"
+          type: array
         id:
           type: string
         included_baggage_kg:
@@ -5039,40 +5204,77 @@ components:
         name:
           type: string
         origin_agency_id:
+          description: Agence du premier arrêt
           type: string
         origin_agency_name:
           type: string
         origin_city:
           type: string
+        pricing_mode:
+          description: "flat : prix unique quelle que soit la descente ; grid : grille de ville à ville"
+          enum:
+            - flat
+            - grid
+          type: string
+        stops:
+          items:
+            $ref: "#/components/schemas/RouteStop"
+          type: array
       required:
         - id
         - origin_agency_id
-        - destination_agency_id
         - name
         - base_price
+        - pricing_mode
         - duration_minutes
         - included_baggage_kg
         - is_active
+        - stops
+        - fares
+      type: object
+    RouteFare:
+      additionalProperties: false
+      properties:
+        from_city_id:
+          type: string
+        price:
+          format: int64
+          minimum: 1
+          type: integer
+        to_city_id:
+          type: string
+      required:
+        - from_city_id
+        - to_city_id
+        - price
       type: object
     RouteInput:
       additionalProperties: false
       properties:
         base_price:
-          description: Tarif Standard (XOF)
+          description: Prix complet, Standard (XOF)
           format: int64
           minimum: 1
           type: integer
         destination_agency_id:
+          description: "Ancienne forme : agence d'arrivée"
           type: string
         distance_km:
           format: int32
           minimum: 1
           type: integer
         duration_minutes:
+          description: "Ancienne forme : durée"
           format: int32
           maximum: 4320
-          minimum: 1
+          minimum: 0
           type: integer
+        fares:
+          description: "Grille (mode grid) : cases absentes = prix complet"
+          items:
+            $ref: "#/components/schemas/RouteFare"
+          maxItems: 800
+          type: array
         included_baggage_kg:
           description: Bagage inclus (kg), ex. 20
           format: int32
@@ -5087,15 +5289,90 @@ components:
           minLength: 2
           type: string
         origin_agency_id:
+          description: "Ancienne forme : agence de départ"
           type: string
+        pricing_mode:
+          default: flat
+          enum:
+            - flat
+            - grid
+          type: string
+        stops:
+          description: Arrêts dans l'ordre de passage (au moins 2)
+          items:
+            $ref: "#/components/schemas/RouteStopInput"
+          maxItems: 40
+          type: array
       required:
-        - origin_agency_id
-        - destination_agency_id
         - name
         - base_price
-        - duration_minutes
         - included_baggage_kg
         - is_active
+      type: object
+    RouteStop:
+      additionalProperties: false
+      properties:
+        agency_id:
+          type: string
+        can_alight:
+          type: boolean
+        can_board:
+          description: Montée sur réservation (agences)
+          type: boolean
+        city_id:
+          type: string
+        city_name:
+          type: string
+        offset_minutes:
+          description: Minutes depuis l'heure de départ
+          format: int64
+          type: integer
+        pause_minutes:
+          format: int64
+          type: integer
+        seq:
+          format: int64
+          type: integer
+        stop_name:
+          type: string
+        stop_point_id:
+          type: string
+      required:
+        - seq
+        - stop_point_id
+        - stop_name
+        - city_id
+        - city_name
+        - offset_minutes
+        - pause_minutes
+        - can_board
+        - can_alight
+      type: object
+    RouteStopInput:
+      additionalProperties: false
+      properties:
+        can_alight:
+          type: boolean
+        can_board:
+          type: boolean
+        offset_minutes:
+          description: Minutes depuis l'heure de départ (0 pour le premier arrêt)
+          format: int64
+          maximum: 4320
+          minimum: 0
+          type: integer
+        pause_minutes:
+          format: int64
+          maximum: 180
+          minimum: 0
+          type: integer
+        stop_point_id:
+          type: string
+      required:
+        - stop_point_id
+        - offset_minutes
+        - can_board
+        - can_alight
       type: object
     RuleInput:
       additionalProperties: false
@@ -5223,20 +5500,33 @@ components:
     SearchResult:
       additionalProperties: false
       properties:
+        alighting_seq:
+          description: Indice de l'arrêt de descente
+          format: int64
+          type: integer
         arrival_eta:
+          description: Heure prévue à l'arrêt de descente
           format: date-time
           type: string
         available_seats:
           format: int32
           type: integer
         base_price:
-          description: Tarif Standard (XOF)
+          description: Prix Standard de ce trajet (XOF)
+          format: int64
+          type: integer
+        boarding_seq:
+          description: Indice de l'arrêt de montée (à renvoyer à la réservation)
           format: int64
           type: integer
         bus_amenities:
           items:
             type: string
           type: array
+        bus_departure_at:
+          description: Heure de départ du car (premier arrêt)
+          format: date-time
+          type: string
         bus_model:
           type: string
         company_id:
@@ -5244,15 +5534,20 @@ components:
         company_name:
           type: string
         departure_at:
+          description: Heure prévue à l'arrêt de montée
           format: date-time
           type: string
         destination_agency_id:
+          description: Agence de descente, si l'arrêt en est une
           type: string
         destination_agency_name:
+          description: Arrêt de descente
           type: string
         destination_city:
+          description: Ville de descente
           type: string
         duration_minutes:
+          description: Durée du trajet du voyageur
           format: int32
           type: integer
         early_bird:
@@ -5264,10 +5559,12 @@ components:
           format: int32
           type: integer
         origin_agency_id:
+          description: Agence de montée
           type: string
         origin_agency_name:
           type: string
         origin_city:
+          description: Ville de montée
           type: string
         route_name:
           type: string
@@ -5290,8 +5587,10 @@ components:
         - origin_agency_id
         - origin_agency_name
         - destination_city
-        - destination_agency_id
         - destination_agency_name
+        - boarding_seq
+        - alighting_seq
+        - bus_departure_at
         - bus_model
         - bus_amenities
         - seat_count
@@ -6022,6 +6321,77 @@ components:
         - phone
         - role
       type: object
+    StopPoint:
+      additionalProperties: false
+      properties:
+        address:
+          type: string
+        agency_id:
+          description: "Point d'arrêt situé à une agence : montée possible sur réservation"
+          type: string
+        agency_name:
+          type: string
+        city_id:
+          type: string
+        city_name:
+          type: string
+        id:
+          type: string
+        in_use:
+          description: Utilisé par au moins une ligne
+          type: boolean
+        is_active:
+          type: boolean
+        latitude:
+          format: double
+          type: number
+        longitude:
+          format: double
+          type: number
+        name:
+          type: string
+      required:
+        - id
+        - city_id
+        - city_name
+        - name
+        - address
+        - is_active
+        - in_use
+      type: object
+    StopPointInput:
+      additionalProperties: false
+      properties:
+        address:
+          example: Carrefour de la RNIE 2, devant la station
+          maxLength: 200
+          type: string
+        city_id:
+          description: Ignoré en modification
+          type: string
+        is_active:
+          type: boolean
+        latitude:
+          format: double
+          maximum: 90
+          minimum: -90
+          type: number
+        longitude:
+          format: double
+          maximum: 180
+          minimum: -180
+          type: number
+        name:
+          example: Carrefour Dassa
+          maxLength: 80
+          minLength: 2
+          type: string
+      required:
+        - city_id
+        - name
+        - address
+        - is_active
+      type: object
     Sync-offline-scansRequest:
       additionalProperties: false
       properties:
@@ -6373,12 +6743,19 @@ components:
       additionalProperties: false
       properties:
         agent_id:
+          description: Contrôleur à bord
           type: string
         base_price:
           description: S'applique aux nouvelles ventes uniquement
           format: int64
           minimum: 1
           type: integer
+        crew:
+          description: "Absent : autres membres inchangés ; [] : aucun"
+          items:
+            $ref: "#/components/schemas/CrewMemberInput"
+          maxItems: 6
+          type: array
         departure_at:
           format: date-time
           type: string
@@ -6434,40 +6811,6 @@ components:
           type: string
       required:
         - full_name
-      type: object
-    Update-routeRequest:
-      additionalProperties: false
-      properties:
-        base_price:
-          format: int64
-          minimum: 1
-          type: integer
-        distance_km:
-          format: int32
-          minimum: 1
-          type: integer
-        duration_minutes:
-          format: int32
-          maximum: 4320
-          minimum: 1
-          type: integer
-        included_baggage_kg:
-          format: int32
-          maximum: 200
-          minimum: 0
-          type: integer
-        is_active:
-          type: boolean
-        name:
-          maxLength: 120
-          minLength: 2
-          type: string
-      required:
-        - name
-        - base_price
-        - duration_minutes
-        - included_baggage_kg
-        - is_active
       type: object
     Update-staffRequest:
       additionalProperties: false
@@ -11417,7 +11760,7 @@ paths:
   /v1/admin/routes/{id}:
     put:
       description: |-
-        Les agences d'une ligne ne sont pas modifiables. Le nouveau tarif s'applique aux départs créés ensuite.
+        Les nouveaux arrêts, tarifs et grille s'appliquent aux départs créés ensuite : les départs existants gardent leurs arrêts et les billets vendus ne changent pas. Sans `stops`, les arrêts sont conservés.
 
         Réservé au **personnel** — rôles : `company_admin`.
       operationId: update-route
@@ -11431,7 +11774,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/Update-routeRequest"
+              $ref: "#/components/schemas/RouteInput"
         required: true
       responses:
         "200":
@@ -11467,7 +11810,7 @@ paths:
       security:
         - bearerAuth: []
         - cookieAuth: []
-      summary: Modifier une ligne (tarif, durée…)
+      summary: Modifier une ligne (arrêts, tarifs, grille…)
       tags:
         - Admin — Flotte et lignes
   /v1/admin/seat-categories:
@@ -12040,6 +12383,148 @@ paths:
       summary: Réinitialiser le mot de passe d'un compte
       tags:
         - Admin — Personnel et terminaux
+  /v1/admin/stop-points:
+    get:
+      description: Réservé au **personnel** (tous rôles).
+      operationId: list-stop-points
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: "#/components/schemas/StopPoint"
+                type: array
+          description: OK
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unauthorized
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Forbidden
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Internal Server Error
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      summary: Lister les points d'arrêt
+      tags:
+        - Admin — Compagnie et agences
+    post:
+      description: |-
+        Les agences ont déjà leur point d'arrêt, créé automatiquement.
+
+        Réservé au **personnel** — rôles : `company_admin`.
+      operationId: create-stop-point
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StopPointInput"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StopPoint"
+          description: OK
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unauthorized
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Forbidden
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unprocessable Entity
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Internal Server Error
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      summary: Créer un point d'arrêt (carrefour, station, gare routière…)
+      tags:
+        - Admin — Compagnie et agences
+  /v1/admin/stop-points/{id}:
+    put:
+      description: |-
+        La ville et l'agence liée ne changent pas (les billets déjà vendus y font référence). Un point d'arrêt désactivé n'est plus proposé pour les nouvelles lignes.
+
+        Réservé au **personnel** — rôles : `company_admin`.
+      operationId: update-stop-point
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StopPointInput"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StopPoint"
+          description: OK
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unauthorized
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Forbidden
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unprocessable Entity
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Internal Server Error
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      summary: Modifier un point d'arrêt
+      tags:
+        - Admin — Compagnie et agences
   /v1/admin/tickets/{id}/pdf:
     get:
       description: "Réservé au **personnel** — rôles : `company_admin`, `agency_manager`, `cashier`."
@@ -14719,7 +15204,7 @@ paths:
         - Public — Recherche de départs
   /v1/public/departures/{id}:
     get:
-      description: "États des sièges : available, held (bloqué pendant un paiement), sold, boarded, blocked. Le plan reflète en temps réel les ventes de tous les canaux (application, site, guichet)."
+      description: "États des sièges sur le trajet demandé : available, held (bloqué pendant un paiement), sold, boarded, blocked. Le plan reflète en temps réel les ventes de tous les canaux (application, site, guichet). Sans `boarding`/`alighting` : premier arrêt → dernier arrêt."
       operationId: get-public-departure
       parameters:
         - in: path
@@ -14727,6 +15212,24 @@ paths:
           required: true
           schema:
             type: string
+        - description: Indice de l'arrêt de montée (boarding_seq de la recherche)
+          explode: false
+          in: query
+          name: boarding
+          schema:
+            default: -1
+            description: Indice de l'arrêt de montée (boarding_seq de la recherche)
+            format: int64
+            type: integer
+        - description: Indice de l'arrêt de descente
+          explode: false
+          in: query
+          name: alighting
+          schema:
+            default: -1
+            description: Indice de l'arrêt de descente
+            format: int64
+            type: integer
       responses:
         "200":
           content:

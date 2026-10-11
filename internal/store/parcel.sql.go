@@ -160,7 +160,7 @@ type GetDepartureRouteAgenciesRow struct {
 	Status              string
 	DepartureAt         time.Time
 	OriginAgencyID      uuid.UUID
-	DestinationAgencyID uuid.UUID
+	DestinationAgencyID *uuid.UUID
 }
 
 func (q *Queries) GetDepartureRouteAgencies(ctx context.Context, id uuid.UUID) (GetDepartureRouteAgenciesRow, error) {

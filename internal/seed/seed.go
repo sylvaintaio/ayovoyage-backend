@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"busvoyage/internal/auth"
+	"busvoyage/internal/network"
 	"busvoyage/internal/platform/database"
 	"busvoyage/internal/store"
 )
@@ -50,6 +51,7 @@ func Run(ctx context.Context, db *database.DB) error {
 		for _, c := range []struct{ name, slug string }{
 			{"Cotonou", "cotonou"}, {"Parakou", "parakou"}, {"Porto-Novo", "porto-novo"}, {"Bohicon", "bohicon"},
 			{"Natitingou", "natitingou"}, {"Djougou", "djougou"}, {"Abomey-Calavi", "abomey-calavi"},
+			{"Dassa-Zoumè", "dassa-zoume"}, {"Savè", "save"},
 		} {
 			city, err := q.CreateCity(ctx, store.CreateCityParams{Name: c.name, Slug: c.slug, CountryCode: "BJ"})
 			if err != nil {
@@ -87,6 +89,31 @@ func Run(ctx context.Context, db *database.DB) error {
 				return err
 			}
 			agencies[a.key] = ag
+			if err := network.EnsureAgencyStopPoint(ctx, q, ag); err != nil {
+				return err
+			}
+		}
+
+		// Points d'arrêt : ceux des agences (créés ci-dessus) et des arrêts en bord de route.
+		stops := map[string]uuid.UUID{}
+		for key, ag := range agencies {
+			sp, err := q.GetStopPointByAgency(ctx, &ag.ID)
+			if err != nil {
+				return err
+			}
+			stops[key] = sp.ID
+		}
+		for _, sp := range []struct{ key, city, name, address string }{
+			{"dassa", "dassa-zoume", "Carrefour Dassa", "Carrefour de la RNIE 2, devant la station"},
+			{"save", "save", "Station Savè", "Station-service à l'entrée nord de Savè"},
+			{"parakou-gare", "parakou", "Gare routière de Parakou", "Gare routière centrale"},
+		} {
+			created, err := q.CreateStopPoint(ctx, store.CreateStopPointParams{CompanyID: company.ID, CityID: cities[sp.city].ID,
+				Name: sp.name, Address: sp.address, IsActive: true})
+			if err != nil {
+				return err
+			}
+			stops[sp.key] = created.ID
 		}
 
 		// Catégories : 4 VIP à l'avant, 8 Premium, le reste Standard (exemple du cahier de conception).
@@ -170,21 +197,67 @@ func Run(ctx context.Context, db *database.DB) error {
 			buses = append(buses, b)
 		}
 
-		cotParakou, err := q.CreateRoute(ctx, store.CreateRouteParams{CompanyID: company.ID, OriginAgencyID: agencies["cotonou"].ID,
-			DestinationAgencyID: agencies["parakou"].ID, Name: "Cotonou → Parakou", BasePrice: 7500, DurationMinutes: 420,
-			DistanceKm: ptrInt(415), IncludedBaggageKg: 20, IsActive: true})
+		// Lignes à arrêts. Cotonou → Parakou : grille de prix (on paie selon la descente).
+		type seedStop struct {
+			key           string
+			offset, pause int32
+			board, alight bool
+		}
+		newRoute := func(name string, price int64, distance int32, mode string, stopsIn []seedStop, fares map[[2]string]int64) (store.Route, error) {
+			first := agencies[stopsIn[0].key]
+			rt, err := q.CreateRoute(ctx, store.CreateRouteParams{CompanyID: company.ID, OriginAgencyID: first.ID, Name: name,
+				BasePrice: price, DurationMinutes: 1, DistanceKm: ptrInt(distance), IncludedBaggageKg: 20, IsActive: true})
+			if err != nil {
+				return rt, err
+			}
+			for i, st := range stopsIn {
+				if err := q.InsertRouteStop(ctx, store.InsertRouteStopParams{RouteID: rt.ID, CompanyID: company.ID, Seq: int32(i),
+					StopPointID: stops[st.key], OffsetMinutes: st.offset, PauseMinutes: st.pause, CanBoard: st.board, CanAlight: st.alight}); err != nil {
+					return rt, err
+				}
+			}
+			for pair, amount := range fares {
+				if err := q.InsertRouteFare(ctx, store.InsertRouteFareParams{RouteID: rt.ID, CompanyID: company.ID,
+					FromCityID: cities[pair[0]].ID, ToCityID: cities[pair[1]].ID, Price: amount}); err != nil {
+					return rt, err
+				}
+			}
+			last := stopsIn[len(stopsIn)-1]
+			var dest *uuid.UUID
+			if ag, ok := agencies[last.key]; ok {
+				dest = &ag.ID
+			}
+			return q.SetRouteItinerary(ctx, store.SetRouteItineraryParams{ID: rt.ID, CompanyID: company.ID, OriginAgencyID: first.ID,
+				DestinationAgencyID: dest, DurationMinutes: last.offset, PricingMode: mode})
+		}
+		cotParakou, err := newRoute("Cotonou → Parakou", 7500, 415, "grid", []seedStop{
+			{key: "cotonou", board: true},
+			{key: "calavi", offset: 40, board: true, alight: true},
+			{key: "bohicon", offset: 150, pause: 15, board: true, alight: true},
+			{key: "dassa", offset: 240, alight: true},
+			{key: "save", offset: 300, alight: true},
+			{key: "parakou", offset: 420, alight: true},
+		}, map[[2]string]int64{
+			{"cotonou", "abomey-calavi"}: 1500, {"cotonou", "bohicon"}: 3500, {"cotonou", "dassa-zoume"}: 5000, {"cotonou", "save"}: 6000,
+			{"abomey-calavi", "bohicon"}: 3000, {"abomey-calavi", "dassa-zoume"}: 4500, {"abomey-calavi", "save"}: 5500,
+			{"bohicon", "dassa-zoume"}: 2000, {"bohicon", "save"}: 3000, {"bohicon", "parakou"}: 5000,
+		})
 		if err != nil {
 			return err
 		}
-		parakouCot, err := q.CreateRoute(ctx, store.CreateRouteParams{CompanyID: company.ID, OriginAgencyID: agencies["parakou"].ID,
-			DestinationAgencyID: agencies["cotonou"].ID, Name: "Parakou → Cotonou", BasePrice: 7500, DurationMinutes: 420,
-			DistanceKm: ptrInt(415), IncludedBaggageKg: 20, IsActive: true})
+		parakouCot, err := newRoute("Parakou → Cotonou", 7500, 415, "flat", []seedStop{
+			{key: "parakou", board: true},
+			{key: "bohicon", offset: 270, pause: 15, board: true, alight: true},
+			{key: "cotonou", offset: 420, alight: true},
+		}, nil)
 		if err != nil {
 			return err
 		}
-		cotNati, err := q.CreateRoute(ctx, store.CreateRouteParams{CompanyID: company.ID, OriginAgencyID: agencies["cotonou"].ID,
-			DestinationAgencyID: agencies["natitingou"].ID, Name: "Cotonou → Natitingou", BasePrice: 10000, DurationMinutes: 600,
-			DistanceKm: ptrInt(530), IncludedBaggageKg: 20, IsActive: true})
+		cotNati, err := newRoute("Cotonou → Natitingou", 10000, 530, "flat", []seedStop{
+			{key: "cotonou", board: true},
+			{key: "bohicon", offset: 150, pause: 15, board: true, alight: true},
+			{key: "natitingou", offset: 600, alight: true},
+		}, nil)
 		if err != nil {
 			return err
 		}
@@ -223,9 +296,14 @@ func Run(ctx context.Context, db *database.DB) error {
 				if dep.Before(time.Now().Add(30 * time.Minute)) {
 					continue
 				}
-				if _, err := q.CreateDeparture(ctx, store.CreateDepartureParams{CompanyID: company.ID, RouteID: s.route.ID, BusID: s.bus.ID,
+				created, err := q.CreateDeparture(ctx, store.CreateDepartureParams{CompanyID: company.ID, RouteID: s.route.ID, BusID: s.bus.ID,
 					LayoutID: layout.ID, DepartureAt: dep, ArrivalEta: dep.Add(time.Duration(s.route.DurationMinutes) * time.Minute),
-					BasePrice: s.route.BasePrice, AgentID: &agent.ID}); err != nil {
+					BasePrice: s.route.BasePrice, AgentID: &agent.ID})
+				if err != nil {
+					return err
+				}
+				if err := q.CopyRouteStopsToDeparture(ctx, store.CopyRouteStopsToDepartureParams{
+					DepartureID: created.ID, DepartureAt: dep, RouteID: s.route.ID}); err != nil {
 					return err
 				}
 			}

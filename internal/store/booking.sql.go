@@ -22,7 +22,7 @@ func (q *Queries) CancelBookingTickets(ctx context.Context, bookingID uuid.UUID)
 }
 
 const confirmBooking = `-- name: ConfirmBooking :one
-UPDATE bookings SET status = 'confirmed', confirmed_at = now() WHERE id = $1 RETURNING id, company_id, reference, departure_id, customer_id, channel, agency_id, created_by_staff_id, status, contact_name, contact_phone, contact_email, subtotal_amount, discount_amount, loyalty_points_used, loyalty_points_amount, total_amount, currency, expires_at, confirmed_at, cancelled_at, cancel_reason, created_at, updated_at, changed_from_booking_id, change_count, change_fee_amount, change_credit_amount, reminder_sent_at, day_reminder_sent_at, billing_name, billing_tax_id, payment_mode, pay_by, pay_reminder_sent_at, promo_code_id, promo_code, promo_amount, early_bird_amount, referral_amount
+UPDATE bookings SET status = 'confirmed', confirmed_at = now() WHERE id = $1 RETURNING id, company_id, reference, departure_id, customer_id, channel, agency_id, created_by_staff_id, status, contact_name, contact_phone, contact_email, subtotal_amount, discount_amount, loyalty_points_used, loyalty_points_amount, total_amount, currency, expires_at, confirmed_at, cancelled_at, cancel_reason, created_at, updated_at, changed_from_booking_id, change_count, change_fee_amount, change_credit_amount, reminder_sent_at, day_reminder_sent_at, billing_name, billing_tax_id, payment_mode, pay_by, pay_reminder_sent_at, promo_code_id, promo_code, promo_amount, early_bird_amount, referral_amount, boarding_seq, alighting_seq
 `
 
 func (q *Queries) ConfirmBooking(ctx context.Context, id uuid.UUID) (Booking, error) {
@@ -69,6 +69,8 @@ func (q *Queries) ConfirmBooking(ctx context.Context, id uuid.UUID) (Booking, er
 		&i.PromoAmount,
 		&i.EarlyBirdAmount,
 		&i.ReferralAmount,
+		&i.BoardingSeq,
+		&i.AlightingSeq,
 	)
 	return i, err
 }
@@ -255,6 +257,60 @@ func (q *Queries) ExtendBookingSeatHolds(ctx context.Context, arg ExtendBookingS
 	return err
 }
 
+const findTripOnDeparture = `-- name: FindTripOnDeparture :one
+SELECT d.id, d.company_id, d.departure_at, bs.seq AS boarding_seq, bs.scheduled_at AS boarding_at, al.seq AS alighting_seq
+FROM departures d
+JOIN departure_stops bs ON bs.departure_id = d.id AND bs.can_board
+JOIN stop_points bsp ON bsp.id = bs.stop_point_id
+JOIN LATERAL (
+    SELECT a.seq FROM departure_stops a JOIN stop_points ap ON ap.id = a.stop_point_id
+    WHERE a.departure_id = d.id AND a.can_alight AND a.seq > bs.seq AND ap.city_id = $1
+    ORDER BY (a.stop_point_id = $2) DESC, a.seq
+    LIMIT 1
+) al ON true
+WHERE d.id = $3 AND bsp.city_id = $4
+ORDER BY (bs.stop_point_id = $5) DESC, bs.seq
+LIMIT 1
+`
+
+type FindTripOnDepartureParams struct {
+	AlightingCityID uuid.UUID
+	AlightingStopID uuid.UUID
+	DepartureID     uuid.UUID
+	BoardingCityID  uuid.UUID
+	BoardingStopID  uuid.UUID
+}
+
+type FindTripOnDepartureRow struct {
+	ID           uuid.UUID
+	CompanyID    uuid.UUID
+	DepartureAt  time.Time
+	BoardingSeq  int32
+	BoardingAt   time.Time
+	AlightingSeq int32
+}
+
+// Même trajet sur un autre départ : mêmes villes, en gardant si possible les mêmes arrêts.
+func (q *Queries) FindTripOnDeparture(ctx context.Context, arg FindTripOnDepartureParams) (FindTripOnDepartureRow, error) {
+	row := q.db.QueryRow(ctx, findTripOnDeparture,
+		arg.AlightingCityID,
+		arg.AlightingStopID,
+		arg.DepartureID,
+		arg.BoardingCityID,
+		arg.BoardingStopID,
+	)
+	var i FindTripOnDepartureRow
+	err := row.Scan(
+		&i.ID,
+		&i.CompanyID,
+		&i.DepartureAt,
+		&i.BoardingSeq,
+		&i.BoardingAt,
+		&i.AlightingSeq,
+	)
+	return i, err
+}
+
 const getActivePayLaterBlock = `-- name: GetActivePayLaterBlock :one
 SELECT id, company_id, phone, blocked_until, reason, lifted_by, lifted_at, created_at FROM pay_later_blocks
 WHERE company_id = $1 AND phone = $2 AND lifted_at IS NULL AND blocked_until > now()
@@ -284,7 +340,7 @@ func (q *Queries) GetActivePayLaterBlock(ctx context.Context, arg GetActivePayLa
 }
 
 const getBoardingScanByClientID = `-- name: GetBoardingScanByClientID :one
-SELECT id, company_id, departure_id, ticket_id, staff_id, device_id, result, offline, scanned_at, received_at, client_scan_id FROM boarding_scans WHERE device_id = $1 AND client_scan_id = $2
+SELECT id, company_id, departure_id, ticket_id, staff_id, device_id, result, offline, scanned_at, received_at, client_scan_id, stop_seq FROM boarding_scans WHERE device_id = $1 AND client_scan_id = $2
 `
 
 type GetBoardingScanByClientIDParams struct {
@@ -307,12 +363,13 @@ func (q *Queries) GetBoardingScanByClientID(ctx context.Context, arg GetBoarding
 		&i.ScannedAt,
 		&i.ReceivedAt,
 		&i.ClientScanID,
+		&i.StopSeq,
 	)
 	return i, err
 }
 
 const getBooking = `-- name: GetBooking :one
-SELECT id, company_id, reference, departure_id, customer_id, channel, agency_id, created_by_staff_id, status, contact_name, contact_phone, contact_email, subtotal_amount, discount_amount, loyalty_points_used, loyalty_points_amount, total_amount, currency, expires_at, confirmed_at, cancelled_at, cancel_reason, created_at, updated_at, changed_from_booking_id, change_count, change_fee_amount, change_credit_amount, reminder_sent_at, day_reminder_sent_at, billing_name, billing_tax_id, payment_mode, pay_by, pay_reminder_sent_at, promo_code_id, promo_code, promo_amount, early_bird_amount, referral_amount FROM bookings WHERE id = $1
+SELECT id, company_id, reference, departure_id, customer_id, channel, agency_id, created_by_staff_id, status, contact_name, contact_phone, contact_email, subtotal_amount, discount_amount, loyalty_points_used, loyalty_points_amount, total_amount, currency, expires_at, confirmed_at, cancelled_at, cancel_reason, created_at, updated_at, changed_from_booking_id, change_count, change_fee_amount, change_credit_amount, reminder_sent_at, day_reminder_sent_at, billing_name, billing_tax_id, payment_mode, pay_by, pay_reminder_sent_at, promo_code_id, promo_code, promo_amount, early_bird_amount, referral_amount, boarding_seq, alighting_seq FROM bookings WHERE id = $1
 `
 
 func (q *Queries) GetBooking(ctx context.Context, id uuid.UUID) (Booking, error) {
@@ -359,12 +416,14 @@ func (q *Queries) GetBooking(ctx context.Context, id uuid.UUID) (Booking, error)
 		&i.PromoAmount,
 		&i.EarlyBirdAmount,
 		&i.ReferralAmount,
+		&i.BoardingSeq,
+		&i.AlightingSeq,
 	)
 	return i, err
 }
 
 const getBookingByReference = `-- name: GetBookingByReference :one
-SELECT id, company_id, reference, departure_id, customer_id, channel, agency_id, created_by_staff_id, status, contact_name, contact_phone, contact_email, subtotal_amount, discount_amount, loyalty_points_used, loyalty_points_amount, total_amount, currency, expires_at, confirmed_at, cancelled_at, cancel_reason, created_at, updated_at, changed_from_booking_id, change_count, change_fee_amount, change_credit_amount, reminder_sent_at, day_reminder_sent_at, billing_name, billing_tax_id, payment_mode, pay_by, pay_reminder_sent_at, promo_code_id, promo_code, promo_amount, early_bird_amount, referral_amount FROM bookings WHERE reference = $1
+SELECT id, company_id, reference, departure_id, customer_id, channel, agency_id, created_by_staff_id, status, contact_name, contact_phone, contact_email, subtotal_amount, discount_amount, loyalty_points_used, loyalty_points_amount, total_amount, currency, expires_at, confirmed_at, cancelled_at, cancel_reason, created_at, updated_at, changed_from_booking_id, change_count, change_fee_amount, change_credit_amount, reminder_sent_at, day_reminder_sent_at, billing_name, billing_tax_id, payment_mode, pay_by, pay_reminder_sent_at, promo_code_id, promo_code, promo_amount, early_bird_amount, referral_amount, boarding_seq, alighting_seq FROM bookings WHERE reference = $1
 `
 
 func (q *Queries) GetBookingByReference(ctx context.Context, reference string) (Booking, error) {
@@ -411,12 +470,14 @@ func (q *Queries) GetBookingByReference(ctx context.Context, reference string) (
 		&i.PromoAmount,
 		&i.EarlyBirdAmount,
 		&i.ReferralAmount,
+		&i.BoardingSeq,
+		&i.AlightingSeq,
 	)
 	return i, err
 }
 
 const getBookingForUpdate = `-- name: GetBookingForUpdate :one
-SELECT id, company_id, reference, departure_id, customer_id, channel, agency_id, created_by_staff_id, status, contact_name, contact_phone, contact_email, subtotal_amount, discount_amount, loyalty_points_used, loyalty_points_amount, total_amount, currency, expires_at, confirmed_at, cancelled_at, cancel_reason, created_at, updated_at, changed_from_booking_id, change_count, change_fee_amount, change_credit_amount, reminder_sent_at, day_reminder_sent_at, billing_name, billing_tax_id, payment_mode, pay_by, pay_reminder_sent_at, promo_code_id, promo_code, promo_amount, early_bird_amount, referral_amount FROM bookings WHERE id = $1 FOR UPDATE
+SELECT id, company_id, reference, departure_id, customer_id, channel, agency_id, created_by_staff_id, status, contact_name, contact_phone, contact_email, subtotal_amount, discount_amount, loyalty_points_used, loyalty_points_amount, total_amount, currency, expires_at, confirmed_at, cancelled_at, cancel_reason, created_at, updated_at, changed_from_booking_id, change_count, change_fee_amount, change_credit_amount, reminder_sent_at, day_reminder_sent_at, billing_name, billing_tax_id, payment_mode, pay_by, pay_reminder_sent_at, promo_code_id, promo_code, promo_amount, early_bird_amount, referral_amount, boarding_seq, alighting_seq FROM bookings WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) GetBookingForUpdate(ctx context.Context, id uuid.UUID) (Booking, error) {
@@ -463,45 +524,52 @@ func (q *Queries) GetBookingForUpdate(ctx context.Context, id uuid.UUID) (Bookin
 		&i.PromoAmount,
 		&i.EarlyBirdAmount,
 		&i.ReferralAmount,
+		&i.BoardingSeq,
+		&i.AlightingSeq,
 	)
 	return i, err
 }
 
-const getDepartureCities = `-- name: GetDepartureCities :one
+const getBookingTrip = `-- name: GetBookingTrip :one
 
-SELECT d.id, d.company_id, d.departure_at, oc.id AS origin_city_id, oc.name AS origin_city,
-       dc.id AS destination_city_id, dc.name AS destination_city
-FROM departures d
-JOIN routes r ON r.id = d.route_id
-JOIN agencies oa ON oa.id = r.origin_agency_id
-JOIN cities oc ON oc.id = oa.city_id
-JOIN agencies da ON da.id = r.destination_agency_id
-JOIN cities dc ON dc.id = da.city_id
-WHERE d.id = $1
+SELECT b.id, b.company_id, b.departure_id, b.boarding_seq, b.alighting_seq,
+       bs.stop_point_id AS boarding_stop_id, bsp.city_id AS boarding_city_id,
+       al.stop_point_id AS alighting_stop_id, asp.city_id AS alighting_city_id
+FROM bookings b
+JOIN departure_stops bs ON bs.departure_id = b.departure_id AND bs.seq = b.boarding_seq
+JOIN stop_points bsp ON bsp.id = bs.stop_point_id
+JOIN departure_stops al ON al.departure_id = b.departure_id AND al.seq = b.alighting_seq
+JOIN stop_points asp ON asp.id = al.stop_point_id
+WHERE b.id = $1
 `
 
-type GetDepartureCitiesRow struct {
-	ID                uuid.UUID
-	CompanyID         uuid.UUID
-	DepartureAt       time.Time
-	OriginCityID      uuid.UUID
-	OriginCity        string
-	DestinationCityID uuid.UUID
-	DestinationCity   string
+type GetBookingTripRow struct {
+	ID              uuid.UUID
+	CompanyID       uuid.UUID
+	DepartureID     uuid.UUID
+	BoardingSeq     int32
+	AlightingSeq    int32
+	BoardingStopID  uuid.UUID
+	BoardingCityID  uuid.UUID
+	AlightingStopID uuid.UUID
+	AlightingCityID uuid.UUID
 }
 
 // ============================ Modification de billet ============================
-func (q *Queries) GetDepartureCities(ctx context.Context, id uuid.UUID) (GetDepartureCitiesRow, error) {
-	row := q.db.QueryRow(ctx, getDepartureCities, id)
-	var i GetDepartureCitiesRow
+// Trajet d'une réservation : arrêts et villes de montée et de descente.
+func (q *Queries) GetBookingTrip(ctx context.Context, id uuid.UUID) (GetBookingTripRow, error) {
+	row := q.db.QueryRow(ctx, getBookingTrip, id)
+	var i GetBookingTripRow
 	err := row.Scan(
 		&i.ID,
 		&i.CompanyID,
-		&i.DepartureAt,
-		&i.OriginCityID,
-		&i.OriginCity,
-		&i.DestinationCityID,
-		&i.DestinationCity,
+		&i.DepartureID,
+		&i.BoardingSeq,
+		&i.AlightingSeq,
+		&i.BoardingStopID,
+		&i.BoardingCityID,
+		&i.AlightingStopID,
+		&i.AlightingCityID,
 	)
 	return i, err
 }
@@ -764,13 +832,14 @@ const insertBooking = `-- name: InsertBooking :one
 INSERT INTO bookings (company_id, reference, departure_id, customer_id, channel, agency_id, created_by_staff_id,
                       contact_name, contact_phone, contact_email, subtotal_amount, discount_amount,
                       loyalty_points_used, loyalty_points_amount, total_amount, currency, expires_at,
-                      billing_name, billing_tax_id, promo_code_id, promo_code, promo_amount, early_bird_amount, referral_amount)
+                      billing_name, billing_tax_id, promo_code_id, promo_code, promo_amount, early_bird_amount, referral_amount,
+                      boarding_seq, alighting_seq)
 VALUES ($1, $2, $3, $4, $5, $6, $7,
         $8, $9, $10, $11, $12,
         $13, $14, $15, $16, $17,
         $18, $19, $20, $21,
-        $22, $23, $24)
-RETURNING id, company_id, reference, departure_id, customer_id, channel, agency_id, created_by_staff_id, status, contact_name, contact_phone, contact_email, subtotal_amount, discount_amount, loyalty_points_used, loyalty_points_amount, total_amount, currency, expires_at, confirmed_at, cancelled_at, cancel_reason, created_at, updated_at, changed_from_booking_id, change_count, change_fee_amount, change_credit_amount, reminder_sent_at, day_reminder_sent_at, billing_name, billing_tax_id, payment_mode, pay_by, pay_reminder_sent_at, promo_code_id, promo_code, promo_amount, early_bird_amount, referral_amount
+        $22, $23, $24, $25, $26)
+RETURNING id, company_id, reference, departure_id, customer_id, channel, agency_id, created_by_staff_id, status, contact_name, contact_phone, contact_email, subtotal_amount, discount_amount, loyalty_points_used, loyalty_points_amount, total_amount, currency, expires_at, confirmed_at, cancelled_at, cancel_reason, created_at, updated_at, changed_from_booking_id, change_count, change_fee_amount, change_credit_amount, reminder_sent_at, day_reminder_sent_at, billing_name, billing_tax_id, payment_mode, pay_by, pay_reminder_sent_at, promo_code_id, promo_code, promo_amount, early_bird_amount, referral_amount, boarding_seq, alighting_seq
 `
 
 type InsertBookingParams struct {
@@ -798,6 +867,8 @@ type InsertBookingParams struct {
 	PromoAmount         int64
 	EarlyBirdAmount     int64
 	ReferralAmount      int64
+	BoardingSeq         int32
+	AlightingSeq        int32
 }
 
 func (q *Queries) InsertBooking(ctx context.Context, arg InsertBookingParams) (Booking, error) {
@@ -826,6 +897,8 @@ func (q *Queries) InsertBooking(ctx context.Context, arg InsertBookingParams) (B
 		arg.PromoAmount,
 		arg.EarlyBirdAmount,
 		arg.ReferralAmount,
+		arg.BoardingSeq,
+		arg.AlightingSeq,
 	)
 	var i Booking
 	err := row.Scan(
@@ -869,6 +942,8 @@ func (q *Queries) InsertBooking(ctx context.Context, arg InsertBookingParams) (B
 		&i.PromoAmount,
 		&i.EarlyBirdAmount,
 		&i.ReferralAmount,
+		&i.BoardingSeq,
+		&i.AlightingSeq,
 	)
 	return i, err
 }
@@ -876,11 +951,11 @@ func (q *Queries) InsertBooking(ctx context.Context, arg InsertBookingParams) (B
 const insertBookingSeat = `-- name: InsertBookingSeat :one
 INSERT INTO booking_seats (company_id, booking_id, departure_id, seat_cell_id, seat_label, category_id,
                            passenger_name, passenger_phone, base_price, category_surcharge, seat_surcharge,
-                           discount_amount, total_price, hold_expires_at, early_bird_amount)
+                           discount_amount, total_price, hold_expires_at, early_bird_amount, from_seq, to_seq)
 VALUES ($1, $2, $3, $4, $5, $6,
         $7, $8, $9, $10, $11,
-        $12, $13, $14, $15)
-RETURNING id, company_id, booking_id, departure_id, seat_cell_id, seat_label, category_id, passenger_name, passenger_phone, base_price, category_surcharge, seat_surcharge, discount_amount, total_price, status, hold_expires_at, created_at, updated_at, early_bird_amount
+        $12, $13, $14, $15, $16, $17)
+RETURNING id, company_id, booking_id, departure_id, seat_cell_id, seat_label, category_id, passenger_name, passenger_phone, base_price, category_surcharge, seat_surcharge, discount_amount, total_price, status, hold_expires_at, created_at, updated_at, early_bird_amount, from_seq, to_seq
 `
 
 type InsertBookingSeatParams struct {
@@ -899,6 +974,8 @@ type InsertBookingSeatParams struct {
 	TotalPrice        int64
 	HoldExpiresAt     time.Time
 	EarlyBirdAmount   int64
+	FromSeq           int32
+	ToSeq             int32
 }
 
 func (q *Queries) InsertBookingSeat(ctx context.Context, arg InsertBookingSeatParams) (BookingSeat, error) {
@@ -918,6 +995,8 @@ func (q *Queries) InsertBookingSeat(ctx context.Context, arg InsertBookingSeatPa
 		arg.TotalPrice,
 		arg.HoldExpiresAt,
 		arg.EarlyBirdAmount,
+		arg.FromSeq,
+		arg.ToSeq,
 	)
 	var i BookingSeat
 	err := row.Scan(
@@ -940,6 +1019,8 @@ func (q *Queries) InsertBookingSeat(ctx context.Context, arg InsertBookingSeatPa
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.EarlyBirdAmount,
+		&i.FromSeq,
+		&i.ToSeq,
 	)
 	return i, err
 }
@@ -1090,7 +1171,7 @@ func (q *Queries) ListActiveBookingIDsForDeparture(ctx context.Context, departur
 }
 
 const listBookingSeats = `-- name: ListBookingSeats :many
-SELECT bs.id, bs.company_id, bs.booking_id, bs.departure_id, bs.seat_cell_id, bs.seat_label, bs.category_id, bs.passenger_name, bs.passenger_phone, bs.base_price, bs.category_surcharge, bs.seat_surcharge, bs.discount_amount, bs.total_price, bs.status, bs.hold_expires_at, bs.created_at, bs.updated_at, bs.early_bird_amount, sc.name AS category_name, sc.code AS category_code
+SELECT bs.id, bs.company_id, bs.booking_id, bs.departure_id, bs.seat_cell_id, bs.seat_label, bs.category_id, bs.passenger_name, bs.passenger_phone, bs.base_price, bs.category_surcharge, bs.seat_surcharge, bs.discount_amount, bs.total_price, bs.status, bs.hold_expires_at, bs.created_at, bs.updated_at, bs.early_bird_amount, bs.from_seq, bs.to_seq, sc.name AS category_name, sc.code AS category_code
 FROM booking_seats bs
 JOIN seat_categories sc ON sc.id = bs.category_id
 WHERE bs.booking_id = $1
@@ -1117,6 +1198,8 @@ type ListBookingSeatsRow struct {
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 	EarlyBirdAmount   int64
+	FromSeq           int32
+	ToSeq             int32
 	CategoryName      string
 	CategoryCode      string
 }
@@ -1150,6 +1233,8 @@ func (q *Queries) ListBookingSeats(ctx context.Context, bookingID uuid.UUID) ([]
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.EarlyBirdAmount,
+			&i.FromSeq,
+			&i.ToSeq,
 			&i.CategoryName,
 			&i.CategoryCode,
 		); err != nil {
@@ -1224,41 +1309,52 @@ func (q *Queries) ListBookingTickets(ctx context.Context, bookingID uuid.UUID) (
 }
 
 const listChangeCandidates = `-- name: ListChangeCandidates :many
-SELECT id, departure_at, arrival_eta, base_price, origin_agency_name, destination_agency_name, bus_model, available_seats FROM (
-    SELECT d.id, d.departure_at, d.arrival_eta, d.base_price,
-           oa.name AS origin_agency_name, da.name AS destination_agency_name,
-           b.model AS bus_model,
+SELECT id, departure_at, arrival_eta, base_price, origin_agency_name, destination_agency_name, bus_model, boarding_seq, alighting_seq, available_seats FROM (
+    SELECT DISTINCT ON (d.id)
+           d.id, bs.scheduled_at AS departure_at, al.scheduled_at AS arrival_eta, d.base_price,
+           bsp.name AS origin_agency_name, asp.name AS destination_agency_name, b.model AS bus_model,
+           bs.seq AS boarding_seq, al.seq AS alighting_seq,
            (l.seat_count
-              - (SELECT count(*) FROM booking_seats bs
-                 WHERE bs.departure_id = d.id
-                   AND (bs.status = 'sold' OR (bs.status = 'held' AND bs.hold_expires_at > now())))
+              - (SELECT count(DISTINCT g.seat_cell_id) FROM booking_seat_segments g
+                 JOIN booking_seats x ON x.id = g.booking_seat_id
+                 WHERE g.departure_id = d.id AND g.segment >= bs.seq AND g.segment < al.seq
+                   AND (x.status = 'sold' OR (x.status = 'held' AND x.hold_expires_at > now())))
               - (SELECT count(*) FROM departure_blocked_seats x WHERE x.departure_id = d.id))::int AS available_seats
     FROM departures d
-    JOIN routes r ON r.id = d.route_id
-    JOIN agencies oa ON oa.id = r.origin_agency_id
-    JOIN agencies da ON da.id = r.destination_agency_id
+    JOIN departure_stops bs ON bs.departure_id = d.id AND bs.can_board
+    JOIN stop_points bsp ON bsp.id = bs.stop_point_id
+    JOIN LATERAL (
+        SELECT a.seq, a.scheduled_at, a.stop_point_id FROM departure_stops a JOIN stop_points ap ON ap.id = a.stop_point_id
+        WHERE a.departure_id = d.id AND a.can_alight AND a.seq > bs.seq AND ap.city_id = $1
+        ORDER BY (a.stop_point_id = $2) DESC, a.seq
+        LIMIT 1
+    ) al ON true
+    JOIN stop_points asp ON asp.id = al.stop_point_id
     JOIN companies co ON co.id = d.company_id
     JOIN buses b ON b.id = d.bus_id
     JOIN seat_layouts l ON l.id = d.layout_id
-    WHERE d.company_id = $1
-      AND oa.city_id = $2 AND da.city_id = $3
-      AND d.id <> $4
-      AND d.departure_at >= $5 AND d.departure_at < $6
+    WHERE d.company_id = $3
+      AND bsp.city_id = $4
+      AND d.id <> $5
+      AND bs.scheduled_at >= $6 AND bs.scheduled_at < $7
       AND d.status IN ('scheduled', 'boarding')
-      AND d.departure_at > now() + make_interval(mins => co.sales_cutoff_minutes)
+      AND bs.scheduled_at > now() + make_interval(mins => co.sales_cutoff_minutes)
+    ORDER BY d.id, (bs.stop_point_id = $8) DESC, bs.seq
 ) c
-WHERE c.available_seats >= $7::int
+WHERE c.available_seats >= $9::int
 ORDER BY c.departure_at
 LIMIT 50
 `
 
 type ListChangeCandidatesParams struct {
+	DestinationCityID  uuid.UUID
+	AlightingStopID    uuid.UUID
 	CompanyID          uuid.UUID
 	OriginCityID       uuid.UUID
-	DestinationCityID  uuid.UUID
 	ExcludeDepartureID uuid.UUID
 	FromTs             time.Time
 	ToTs               time.Time
+	BoardingStopID     uuid.UUID
 	Passengers         int32
 }
 
@@ -1270,19 +1366,23 @@ type ListChangeCandidatesRow struct {
 	OriginAgencyName      string
 	DestinationAgencyName string
 	BusModel              string
+	BoardingSeq           int32
+	AlightingSeq          int32
 	AvailableSeats        int32
 }
 
-// Départs de remplacement : même compagnie, mêmes villes, ouverts à la vente,
-// avec assez de places pour tous les passagers.
+// Départs de remplacement : même compagnie, mêmes villes de montée et de descente (mêmes arrêts
+// si possible), ouverts à la vente, avec assez de places sur ce trajet pour tous les passagers.
 func (q *Queries) ListChangeCandidates(ctx context.Context, arg ListChangeCandidatesParams) ([]ListChangeCandidatesRow, error) {
 	rows, err := q.db.Query(ctx, listChangeCandidates,
+		arg.DestinationCityID,
+		arg.AlightingStopID,
 		arg.CompanyID,
 		arg.OriginCityID,
-		arg.DestinationCityID,
 		arg.ExcludeDepartureID,
 		arg.FromTs,
 		arg.ToTs,
+		arg.BoardingStopID,
 		arg.Passengers,
 	)
 	if err != nil {
@@ -1300,6 +1400,8 @@ func (q *Queries) ListChangeCandidates(ctx context.Context, arg ListChangeCandid
 			&i.OriginAgencyName,
 			&i.DestinationAgencyName,
 			&i.BusModel,
+			&i.BoardingSeq,
+			&i.AlightingSeq,
 			&i.AvailableSeats,
 		); err != nil {
 			return nil, err
@@ -1313,7 +1415,7 @@ func (q *Queries) ListChangeCandidates(ctx context.Context, arg ListChangeCandid
 }
 
 const listCompanyBookings = `-- name: ListCompanyBookings :many
-SELECT b.id, b.company_id, b.reference, b.departure_id, b.customer_id, b.channel, b.agency_id, b.created_by_staff_id, b.status, b.contact_name, b.contact_phone, b.contact_email, b.subtotal_amount, b.discount_amount, b.loyalty_points_used, b.loyalty_points_amount, b.total_amount, b.currency, b.expires_at, b.confirmed_at, b.cancelled_at, b.cancel_reason, b.created_at, b.updated_at, b.changed_from_booking_id, b.change_count, b.change_fee_amount, b.change_credit_amount, b.reminder_sent_at, b.day_reminder_sent_at, b.billing_name, b.billing_tax_id, b.payment_mode, b.pay_by, b.pay_reminder_sent_at, b.promo_code_id, b.promo_code, b.promo_amount, b.early_bird_amount, b.referral_amount, d.departure_at, r.name AS route_name
+SELECT b.id, b.company_id, b.reference, b.departure_id, b.customer_id, b.channel, b.agency_id, b.created_by_staff_id, b.status, b.contact_name, b.contact_phone, b.contact_email, b.subtotal_amount, b.discount_amount, b.loyalty_points_used, b.loyalty_points_amount, b.total_amount, b.currency, b.expires_at, b.confirmed_at, b.cancelled_at, b.cancel_reason, b.created_at, b.updated_at, b.changed_from_booking_id, b.change_count, b.change_fee_amount, b.change_credit_amount, b.reminder_sent_at, b.day_reminder_sent_at, b.billing_name, b.billing_tax_id, b.payment_mode, b.pay_by, b.pay_reminder_sent_at, b.promo_code_id, b.promo_code, b.promo_amount, b.early_bird_amount, b.referral_amount, b.boarding_seq, b.alighting_seq, d.departure_at, r.name AS route_name
 FROM bookings b
 JOIN departures d ON d.id = b.departure_id
 JOIN routes r ON r.id = d.route_id
@@ -1379,6 +1481,8 @@ type ListCompanyBookingsRow struct {
 	PromoAmount          int64
 	EarlyBirdAmount      int64
 	ReferralAmount       int64
+	BoardingSeq          int32
+	AlightingSeq         int32
 	DepartureAt          time.Time
 	RouteName            string
 }
@@ -1442,6 +1546,8 @@ func (q *Queries) ListCompanyBookings(ctx context.Context, arg ListCompanyBookin
 			&i.PromoAmount,
 			&i.EarlyBirdAmount,
 			&i.ReferralAmount,
+			&i.BoardingSeq,
+			&i.AlightingSeq,
 			&i.DepartureAt,
 			&i.RouteName,
 		); err != nil {
@@ -1456,7 +1562,7 @@ func (q *Queries) ListCompanyBookings(ctx context.Context, arg ListCompanyBookin
 }
 
 const listCustomerBookings = `-- name: ListCustomerBookings :many
-SELECT b.id, b.company_id, b.reference, b.departure_id, b.customer_id, b.channel, b.agency_id, b.created_by_staff_id, b.status, b.contact_name, b.contact_phone, b.contact_email, b.subtotal_amount, b.discount_amount, b.loyalty_points_used, b.loyalty_points_amount, b.total_amount, b.currency, b.expires_at, b.confirmed_at, b.cancelled_at, b.cancel_reason, b.created_at, b.updated_at, b.changed_from_booking_id, b.change_count, b.change_fee_amount, b.change_credit_amount, b.reminder_sent_at, b.day_reminder_sent_at, b.billing_name, b.billing_tax_id, b.payment_mode, b.pay_by, b.pay_reminder_sent_at, b.promo_code_id, b.promo_code, b.promo_amount, b.early_bird_amount, b.referral_amount, d.departure_at, r.name AS route_name, co.name AS company_name
+SELECT b.id, b.company_id, b.reference, b.departure_id, b.customer_id, b.channel, b.agency_id, b.created_by_staff_id, b.status, b.contact_name, b.contact_phone, b.contact_email, b.subtotal_amount, b.discount_amount, b.loyalty_points_used, b.loyalty_points_amount, b.total_amount, b.currency, b.expires_at, b.confirmed_at, b.cancelled_at, b.cancel_reason, b.created_at, b.updated_at, b.changed_from_booking_id, b.change_count, b.change_fee_amount, b.change_credit_amount, b.reminder_sent_at, b.day_reminder_sent_at, b.billing_name, b.billing_tax_id, b.payment_mode, b.pay_by, b.pay_reminder_sent_at, b.promo_code_id, b.promo_code, b.promo_amount, b.early_bird_amount, b.referral_amount, b.boarding_seq, b.alighting_seq, d.departure_at, r.name AS route_name, co.name AS company_name
 FROM bookings b
 JOIN departures d ON d.id = b.departure_id
 JOIN routes r ON r.id = d.route_id
@@ -1515,6 +1621,8 @@ type ListCustomerBookingsRow struct {
 	PromoAmount          int64
 	EarlyBirdAmount      int64
 	ReferralAmount       int64
+	BoardingSeq          int32
+	AlightingSeq         int32
 	DepartureAt          time.Time
 	RouteName            string
 	CompanyName          string
@@ -1575,6 +1683,8 @@ func (q *Queries) ListCustomerBookings(ctx context.Context, arg ListCustomerBook
 			&i.PromoAmount,
 			&i.EarlyBirdAmount,
 			&i.ReferralAmount,
+			&i.BoardingSeq,
+			&i.AlightingSeq,
 			&i.DepartureAt,
 			&i.RouteName,
 			&i.CompanyName,
@@ -1802,7 +1912,7 @@ func (q *Queries) LockDepartureForBooking(ctx context.Context, id uuid.UUID) (Lo
 const markPayLaterReminded = `-- name: MarkPayLaterReminded :one
 UPDATE bookings SET pay_reminder_sent_at = now()
 WHERE id = $1 AND pay_reminder_sent_at IS NULL AND status = 'pending'
-RETURNING id, company_id, reference, departure_id, customer_id, channel, agency_id, created_by_staff_id, status, contact_name, contact_phone, contact_email, subtotal_amount, discount_amount, loyalty_points_used, loyalty_points_amount, total_amount, currency, expires_at, confirmed_at, cancelled_at, cancel_reason, created_at, updated_at, changed_from_booking_id, change_count, change_fee_amount, change_credit_amount, reminder_sent_at, day_reminder_sent_at, billing_name, billing_tax_id, payment_mode, pay_by, pay_reminder_sent_at, promo_code_id, promo_code, promo_amount, early_bird_amount, referral_amount
+RETURNING id, company_id, reference, departure_id, customer_id, channel, agency_id, created_by_staff_id, status, contact_name, contact_phone, contact_email, subtotal_amount, discount_amount, loyalty_points_used, loyalty_points_amount, total_amount, currency, expires_at, confirmed_at, cancelled_at, cancel_reason, created_at, updated_at, changed_from_booking_id, change_count, change_fee_amount, change_credit_amount, reminder_sent_at, day_reminder_sent_at, billing_name, billing_tax_id, payment_mode, pay_by, pay_reminder_sent_at, promo_code_id, promo_code, promo_amount, early_bird_amount, referral_amount, boarding_seq, alighting_seq
 `
 
 func (q *Queries) MarkPayLaterReminded(ctx context.Context, id uuid.UUID) (Booking, error) {
@@ -1849,6 +1959,8 @@ func (q *Queries) MarkPayLaterReminded(ctx context.Context, id uuid.UUID) (Booki
 		&i.PromoAmount,
 		&i.EarlyBirdAmount,
 		&i.ReferralAmount,
+		&i.BoardingSeq,
+		&i.AlightingSeq,
 	)
 	return i, err
 }
@@ -1885,7 +1997,7 @@ func (q *Queries) ReleaseBookingSeats(ctx context.Context, arg ReleaseBookingSea
 const sellBookingSeats = `-- name: SellBookingSeats :many
 UPDATE booking_seats SET status = 'sold'
 WHERE booking_id = $1 AND status IN ('held', 'expired')
-RETURNING id, company_id, booking_id, departure_id, seat_cell_id, seat_label, category_id, passenger_name, passenger_phone, base_price, category_surcharge, seat_surcharge, discount_amount, total_price, status, hold_expires_at, created_at, updated_at, early_bird_amount
+RETURNING id, company_id, booking_id, departure_id, seat_cell_id, seat_label, category_id, passenger_name, passenger_phone, base_price, category_surcharge, seat_surcharge, discount_amount, total_price, status, hold_expires_at, created_at, updated_at, early_bird_amount, from_seq, to_seq
 `
 
 // Passe les sièges en "vendu". Si un siège expiré a été repris entre-temps,
@@ -1919,6 +2031,8 @@ func (q *Queries) SellBookingSeats(ctx context.Context, bookingID uuid.UUID) ([]
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.EarlyBirdAmount,
+			&i.FromSeq,
+			&i.ToSeq,
 		); err != nil {
 			return nil, err
 		}
@@ -1938,7 +2052,7 @@ UPDATE bookings SET
     change_credit_amount    = $4,
     total_amount            = $5
 WHERE id = $6
-RETURNING id, company_id, reference, departure_id, customer_id, channel, agency_id, created_by_staff_id, status, contact_name, contact_phone, contact_email, subtotal_amount, discount_amount, loyalty_points_used, loyalty_points_amount, total_amount, currency, expires_at, confirmed_at, cancelled_at, cancel_reason, created_at, updated_at, changed_from_booking_id, change_count, change_fee_amount, change_credit_amount, reminder_sent_at, day_reminder_sent_at, billing_name, billing_tax_id, payment_mode, pay_by, pay_reminder_sent_at, promo_code_id, promo_code, promo_amount, early_bird_amount, referral_amount
+RETURNING id, company_id, reference, departure_id, customer_id, channel, agency_id, created_by_staff_id, status, contact_name, contact_phone, contact_email, subtotal_amount, discount_amount, loyalty_points_used, loyalty_points_amount, total_amount, currency, expires_at, confirmed_at, cancelled_at, cancel_reason, created_at, updated_at, changed_from_booking_id, change_count, change_fee_amount, change_credit_amount, reminder_sent_at, day_reminder_sent_at, billing_name, billing_tax_id, payment_mode, pay_by, pay_reminder_sent_at, promo_code_id, promo_code, promo_amount, early_bird_amount, referral_amount, boarding_seq, alighting_seq
 `
 
 type SetBookingChangeParams struct {
@@ -2001,6 +2115,8 @@ func (q *Queries) SetBookingChange(ctx context.Context, arg SetBookingChangePara
 		&i.PromoAmount,
 		&i.EarlyBirdAmount,
 		&i.ReferralAmount,
+		&i.BoardingSeq,
+		&i.AlightingSeq,
 	)
 	return i, err
 }
@@ -2009,7 +2125,7 @@ const setBookingPayLater = `-- name: SetBookingPayLater :one
 
 UPDATE bookings SET payment_mode = 'agency', pay_by = $1, expires_at = $1
 WHERE id = $2 AND status = 'pending' AND payment_mode = 'online'
-RETURNING id, company_id, reference, departure_id, customer_id, channel, agency_id, created_by_staff_id, status, contact_name, contact_phone, contact_email, subtotal_amount, discount_amount, loyalty_points_used, loyalty_points_amount, total_amount, currency, expires_at, confirmed_at, cancelled_at, cancel_reason, created_at, updated_at, changed_from_booking_id, change_count, change_fee_amount, change_credit_amount, reminder_sent_at, day_reminder_sent_at, billing_name, billing_tax_id, payment_mode, pay_by, pay_reminder_sent_at, promo_code_id, promo_code, promo_amount, early_bird_amount, referral_amount
+RETURNING id, company_id, reference, departure_id, customer_id, channel, agency_id, created_by_staff_id, status, contact_name, contact_phone, contact_email, subtotal_amount, discount_amount, loyalty_points_used, loyalty_points_amount, total_amount, currency, expires_at, confirmed_at, cancelled_at, cancel_reason, created_at, updated_at, changed_from_booking_id, change_count, change_fee_amount, change_credit_amount, reminder_sent_at, day_reminder_sent_at, billing_name, billing_tax_id, payment_mode, pay_by, pay_reminder_sent_at, promo_code_id, promo_code, promo_amount, early_bird_amount, referral_amount, boarding_seq, alighting_seq
 `
 
 type SetBookingPayLaterParams struct {
@@ -2063,6 +2179,8 @@ func (q *Queries) SetBookingPayLater(ctx context.Context, arg SetBookingPayLater
 		&i.PromoAmount,
 		&i.EarlyBirdAmount,
 		&i.ReferralAmount,
+		&i.BoardingSeq,
+		&i.AlightingSeq,
 	)
 	return i, err
 }
@@ -2072,7 +2190,7 @@ UPDATE bookings SET status = $1,
                     cancelled_at = CASE WHEN $1::text IN ('cancelled', 'expired') THEN now() ELSE cancelled_at END,
                     cancel_reason = $2
 WHERE id = $3
-RETURNING id, company_id, reference, departure_id, customer_id, channel, agency_id, created_by_staff_id, status, contact_name, contact_phone, contact_email, subtotal_amount, discount_amount, loyalty_points_used, loyalty_points_amount, total_amount, currency, expires_at, confirmed_at, cancelled_at, cancel_reason, created_at, updated_at, changed_from_booking_id, change_count, change_fee_amount, change_credit_amount, reminder_sent_at, day_reminder_sent_at, billing_name, billing_tax_id, payment_mode, pay_by, pay_reminder_sent_at, promo_code_id, promo_code, promo_amount, early_bird_amount, referral_amount
+RETURNING id, company_id, reference, departure_id, customer_id, channel, agency_id, created_by_staff_id, status, contact_name, contact_phone, contact_email, subtotal_amount, discount_amount, loyalty_points_used, loyalty_points_amount, total_amount, currency, expires_at, confirmed_at, cancelled_at, cancel_reason, created_at, updated_at, changed_from_booking_id, change_count, change_fee_amount, change_credit_amount, reminder_sent_at, day_reminder_sent_at, billing_name, billing_tax_id, payment_mode, pay_by, pay_reminder_sent_at, promo_code_id, promo_code, promo_amount, early_bird_amount, referral_amount, boarding_seq, alighting_seq
 `
 
 type SetBookingStatusParams struct {
@@ -2125,6 +2243,8 @@ func (q *Queries) SetBookingStatus(ctx context.Context, arg SetBookingStatusPara
 		&i.PromoAmount,
 		&i.EarlyBirdAmount,
 		&i.ReferralAmount,
+		&i.BoardingSeq,
+		&i.AlightingSeq,
 	)
 	return i, err
 }

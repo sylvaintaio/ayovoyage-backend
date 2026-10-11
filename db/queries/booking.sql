@@ -14,21 +14,22 @@ WHERE departure_id = $1 AND status = 'held' AND hold_expires_at <= now();
 INSERT INTO bookings (company_id, reference, departure_id, customer_id, channel, agency_id, created_by_staff_id,
                       contact_name, contact_phone, contact_email, subtotal_amount, discount_amount,
                       loyalty_points_used, loyalty_points_amount, total_amount, currency, expires_at,
-                      billing_name, billing_tax_id, promo_code_id, promo_code, promo_amount, early_bird_amount, referral_amount)
+                      billing_name, billing_tax_id, promo_code_id, promo_code, promo_amount, early_bird_amount, referral_amount,
+                      boarding_seq, alighting_seq)
 VALUES (@company_id, @reference, @departure_id, @customer_id, @channel, @agency_id, @created_by_staff_id,
         @contact_name, @contact_phone, @contact_email, @subtotal_amount, @discount_amount,
         @loyalty_points_used, @loyalty_points_amount, @total_amount, @currency, @expires_at,
         sqlc.narg(billing_name), sqlc.narg(billing_tax_id), sqlc.narg(promo_code_id), sqlc.narg(promo_code),
-        @promo_amount, @early_bird_amount, @referral_amount)
+        @promo_amount, @early_bird_amount, @referral_amount, @boarding_seq, @alighting_seq)
 RETURNING *;
 
 -- name: InsertBookingSeat :one
 INSERT INTO booking_seats (company_id, booking_id, departure_id, seat_cell_id, seat_label, category_id,
                            passenger_name, passenger_phone, base_price, category_surcharge, seat_surcharge,
-                           discount_amount, total_price, hold_expires_at, early_bird_amount)
+                           discount_amount, total_price, hold_expires_at, early_bird_amount, from_seq, to_seq)
 VALUES (@company_id, @booking_id, @departure_id, @seat_cell_id, @seat_label, @category_id,
         @passenger_name, @passenger_phone, @base_price, @category_surcharge, @seat_surcharge,
-        @discount_amount, @total_price, @hold_expires_at, @early_bird_amount)
+        @discount_amount, @total_price, @hold_expires_at, @early_bird_amount, @from_seq, @to_seq)
 RETURNING *;
 
 -- name: GetBooking :one
@@ -197,42 +198,68 @@ SELECT * FROM boarding_scans WHERE device_id = $1 AND client_scan_id = $2;
 
 -- ============================ Modification de billet ============================
 
--- name: GetDepartureCities :one
-SELECT d.id, d.company_id, d.departure_at, oc.id AS origin_city_id, oc.name AS origin_city,
-       dc.id AS destination_city_id, dc.name AS destination_city
+-- name: GetBookingTrip :one
+-- Trajet d'une réservation : arrêts et villes de montée et de descente.
+SELECT b.id, b.company_id, b.departure_id, b.boarding_seq, b.alighting_seq,
+       bs.stop_point_id AS boarding_stop_id, bsp.city_id AS boarding_city_id,
+       al.stop_point_id AS alighting_stop_id, asp.city_id AS alighting_city_id
+FROM bookings b
+JOIN departure_stops bs ON bs.departure_id = b.departure_id AND bs.seq = b.boarding_seq
+JOIN stop_points bsp ON bsp.id = bs.stop_point_id
+JOIN departure_stops al ON al.departure_id = b.departure_id AND al.seq = b.alighting_seq
+JOIN stop_points asp ON asp.id = al.stop_point_id
+WHERE b.id = $1;
+
+-- name: FindTripOnDeparture :one
+-- Même trajet sur un autre départ : mêmes villes, en gardant si possible les mêmes arrêts.
+SELECT d.id, d.company_id, d.departure_at, bs.seq AS boarding_seq, bs.scheduled_at AS boarding_at, al.seq AS alighting_seq
 FROM departures d
-JOIN routes r ON r.id = d.route_id
-JOIN agencies oa ON oa.id = r.origin_agency_id
-JOIN cities oc ON oc.id = oa.city_id
-JOIN agencies da ON da.id = r.destination_agency_id
-JOIN cities dc ON dc.id = da.city_id
-WHERE d.id = $1;
+JOIN departure_stops bs ON bs.departure_id = d.id AND bs.can_board
+JOIN stop_points bsp ON bsp.id = bs.stop_point_id
+JOIN LATERAL (
+    SELECT a.seq FROM departure_stops a JOIN stop_points ap ON ap.id = a.stop_point_id
+    WHERE a.departure_id = d.id AND a.can_alight AND a.seq > bs.seq AND ap.city_id = @alighting_city_id
+    ORDER BY (a.stop_point_id = @alighting_stop_id) DESC, a.seq
+    LIMIT 1
+) al ON true
+WHERE d.id = @departure_id AND bsp.city_id = @boarding_city_id
+ORDER BY (bs.stop_point_id = @boarding_stop_id) DESC, bs.seq
+LIMIT 1;
 
 -- name: ListChangeCandidates :many
--- Départs de remplacement : même compagnie, mêmes villes, ouverts à la vente,
--- avec assez de places pour tous les passagers.
+-- Départs de remplacement : même compagnie, mêmes villes de montée et de descente (mêmes arrêts
+-- si possible), ouverts à la vente, avec assez de places sur ce trajet pour tous les passagers.
 SELECT * FROM (
-    SELECT d.id, d.departure_at, d.arrival_eta, d.base_price,
-           oa.name AS origin_agency_name, da.name AS destination_agency_name,
-           b.model AS bus_model,
+    SELECT DISTINCT ON (d.id)
+           d.id, bs.scheduled_at AS departure_at, al.scheduled_at AS arrival_eta, d.base_price,
+           bsp.name AS origin_agency_name, asp.name AS destination_agency_name, b.model AS bus_model,
+           bs.seq AS boarding_seq, al.seq AS alighting_seq,
            (l.seat_count
-              - (SELECT count(*) FROM booking_seats bs
-                 WHERE bs.departure_id = d.id
-                   AND (bs.status = 'sold' OR (bs.status = 'held' AND bs.hold_expires_at > now())))
+              - (SELECT count(DISTINCT g.seat_cell_id) FROM booking_seat_segments g
+                 JOIN booking_seats x ON x.id = g.booking_seat_id
+                 WHERE g.departure_id = d.id AND g.segment >= bs.seq AND g.segment < al.seq
+                   AND (x.status = 'sold' OR (x.status = 'held' AND x.hold_expires_at > now())))
               - (SELECT count(*) FROM departure_blocked_seats x WHERE x.departure_id = d.id))::int AS available_seats
     FROM departures d
-    JOIN routes r ON r.id = d.route_id
-    JOIN agencies oa ON oa.id = r.origin_agency_id
-    JOIN agencies da ON da.id = r.destination_agency_id
+    JOIN departure_stops bs ON bs.departure_id = d.id AND bs.can_board
+    JOIN stop_points bsp ON bsp.id = bs.stop_point_id
+    JOIN LATERAL (
+        SELECT a.seq, a.scheduled_at, a.stop_point_id FROM departure_stops a JOIN stop_points ap ON ap.id = a.stop_point_id
+        WHERE a.departure_id = d.id AND a.can_alight AND a.seq > bs.seq AND ap.city_id = @destination_city_id
+        ORDER BY (a.stop_point_id = @alighting_stop_id) DESC, a.seq
+        LIMIT 1
+    ) al ON true
+    JOIN stop_points asp ON asp.id = al.stop_point_id
     JOIN companies co ON co.id = d.company_id
     JOIN buses b ON b.id = d.bus_id
     JOIN seat_layouts l ON l.id = d.layout_id
     WHERE d.company_id = @company_id
-      AND oa.city_id = @origin_city_id AND da.city_id = @destination_city_id
+      AND bsp.city_id = @origin_city_id
       AND d.id <> @exclude_departure_id
-      AND d.departure_at >= @from_ts AND d.departure_at < @to_ts
+      AND bs.scheduled_at >= @from_ts AND bs.scheduled_at < @to_ts
       AND d.status IN ('scheduled', 'boarding')
-      AND d.departure_at > now() + make_interval(mins => co.sales_cutoff_minutes)
+      AND bs.scheduled_at > now() + make_interval(mins => co.sales_cutoff_minutes)
+    ORDER BY d.id, (bs.stop_point_id = @boarding_stop_id) DESC, bs.seq
 ) c
 WHERE c.available_seats >= @passengers::int
 ORDER BY c.departure_at

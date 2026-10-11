@@ -88,6 +88,7 @@ type BoardingScan struct {
 	ScannedAt    time.Time
 	ReceivedAt   time.Time
 	ClientScanID *string
+	StopSeq      *int32
 }
 
 type Booking struct {
@@ -131,6 +132,8 @@ type Booking struct {
 	PromoAmount          int64
 	EarlyBirdAmount      int64
 	ReferralAmount       int64
+	BoardingSeq          int32
+	AlightingSeq         int32
 }
 
 type BookingSeat struct {
@@ -153,6 +156,16 @@ type BookingSeat struct {
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 	EarlyBirdAmount   int64
+	FromSeq           int32
+	ToSeq             int32
+}
+
+type BookingSeatSegment struct {
+	BookingSeatID uuid.UUID
+	CompanyID     uuid.UUID
+	DepartureID   uuid.UUID
+	SeatCellID    uuid.UUID
+	Segment       int32
 }
 
 type Bus struct {
@@ -278,6 +291,46 @@ type DepartureBlockedSeat struct {
 	Reason      string
 	BlockedBy   *uuid.UUID
 	CreatedAt   time.Time
+}
+
+type DepartureCrew struct {
+	DepartureID uuid.UUID
+	CompanyID   uuid.UUID
+	StaffID     uuid.UUID
+	Role        string
+}
+
+type DepartureStop struct {
+	DepartureID  uuid.UUID
+	CompanyID    uuid.UUID
+	Seq          int32
+	StopPointID  uuid.UUID
+	ScheduledAt  time.Time
+	PauseMinutes int32
+	CanBoard     bool
+	CanAlight    bool
+}
+
+type DepartureStopVisit struct {
+	ID              uuid.UUID
+	CompanyID       uuid.UUID
+	DepartureID     uuid.UUID
+	Seq             *int32
+	Reason          string
+	Note            string
+	ArrivedAt       time.Time
+	DepartedAt      *time.Time
+	ArrivalLat      *float64
+	ArrivalLng      *float64
+	ArrivalAccuracy *float32
+	DepartureLat    *float64
+	DepartureLng    *float64
+	LocationMocked  bool
+	RecordedBy      uuid.UUID
+	DeviceID        *uuid.UUID
+	ClientID        *string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 type Device struct {
@@ -724,7 +777,7 @@ type Route struct {
 	ID                  uuid.UUID
 	CompanyID           uuid.UUID
 	OriginAgencyID      uuid.UUID
-	DestinationAgencyID uuid.UUID
+	DestinationAgencyID *uuid.UUID
 	Name                string
 	BasePrice           int64
 	DurationMinutes     int32
@@ -733,6 +786,37 @@ type Route struct {
 	IsActive            bool
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
+	PricingMode         string
+}
+
+type RouteFare struct {
+	RouteID    uuid.UUID
+	CompanyID  uuid.UUID
+	FromCityID uuid.UUID
+	ToCityID   uuid.UUID
+	Price      int64
+}
+
+type RouteStop struct {
+	RouteID       uuid.UUID
+	CompanyID     uuid.UUID
+	Seq           int32
+	StopPointID   uuid.UUID
+	OffsetMinutes int32
+	PauseMinutes  int32
+	CanBoard      bool
+	CanAlight     bool
+}
+
+type RouteTerminal struct {
+	RouteID             uuid.UUID
+	OriginStopID        uuid.UUID
+	OriginStopName      string
+	OriginCityID        uuid.UUID
+	DestinationStopID   uuid.UUID
+	DestinationStopName string
+	DestinationCityID   uuid.UUID
+	TotalMinutes        int32
 }
 
 type SeatCategory struct {
@@ -801,6 +885,20 @@ type StaffUser struct {
 	TotpEnabledAt   *time.Time
 	TotpLastStep    int64
 	MfaRequiredFrom time.Time
+}
+
+type StopPoint struct {
+	ID        uuid.UUID
+	CompanyID uuid.UUID
+	CityID    uuid.UUID
+	AgencyID  *uuid.UUID
+	Name      string
+	Address   string
+	Latitude  *float64
+	Longitude *float64
+	IsActive  bool
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 type Ticket struct {

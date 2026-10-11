@@ -29,6 +29,7 @@ import (
 	"busvoyage/internal/platform/phone"
 	"busvoyage/internal/platform/refgen"
 	"busvoyage/internal/pricing"
+	"busvoyage/internal/segment"
 	"busvoyage/internal/store"
 	"busvoyage/internal/ticket"
 )
@@ -59,6 +60,8 @@ type CreateInput struct {
 	BillingName  string           `json:"billing_name,omitempty" maxLength:"160" doc:"Facture au nom d'une entreprise : raison sociale"`
 	BillingTaxID string           `json:"billing_tax_id,omitempty" maxLength:"30" doc:"IFU de l'entreprise"`
 	PromoCode    string           `json:"promo_code,omitempty" maxLength:"30" doc:"Code promo (refus motivé si non valable)"`
+	BoardingSeq  *int             `json:"boarding_seq,omitempty" minimum:"0" doc:"Arrêt de montée (boarding_seq de la recherche). Absent : premier arrêt, ou l'agence du guichet"`
+	AlightingSeq *int             `json:"alighting_seq,omitempty" minimum:"1" doc:"Arrêt de descente. Absent : dernier arrêt"`
 }
 
 // createContext : informations dérivées de l'appelant (jamais du corps de la requête).
@@ -91,14 +94,20 @@ func (s *Service) create(ctx context.Context, tx pgx.Tx, q *store.Queries, cc cr
 	if cc.companyID != nil && dep.CompanyID != *cc.companyID {
 		return store.Booking{}, apix.NotFound("Départ")
 	}
-	if dep.Status != "scheduled" && dep.Status != "boarding" {
-		return store.Booking{}, huma.Error409Conflict("Ce départ n'est plus ouvert à la vente")
+	// Trajet du voyageur : arrêt de montée → arrêt de descente, prix de ce trajet.
+	trip, err := segment.Plan(ctx, q, departureOf(dep), in.BoardingSeq, in.AlightingSeq, cc.agencyID)
+	if err != nil {
+		return store.Booking{}, err
 	}
+	if err := segment.OpenForSale(ctx, q, departureOf(dep), trip.Boarding); err != nil {
+		return store.Booking{}, err
+	}
+	// Délai de vente compté depuis l'heure prévue à l'arrêt de montée (pas depuis le premier arrêt).
 	cutoff := time.Duration(dep.SalesCutoffMinutes) * time.Minute
 	if cc.channel == "counter" {
-		cutoff = 0 // le guichet peut vendre jusqu'au départ
+		cutoff = 0 // le guichet peut vendre jusqu'au passage du car
 	}
-	if time.Now().Add(cutoff).After(dep.DepartureAt) {
+	if cc.channel != "counter" && time.Now().Add(cutoff).After(trip.BoardingStop().ScheduledAt) {
 		return store.Booking{}, huma.Error409Conflict("Les ventes sont closes pour ce départ")
 	}
 
@@ -117,7 +126,8 @@ func (s *Service) create(ctx context.Context, tx pgx.Tx, q *store.Queries, cc cr
 	if err := q.ExpireStaleSeatHolds(ctx, dep.ID); err != nil {
 		return store.Booking{}, err
 	}
-	seatMap, err := q.GetDepartureSeatMap(ctx, store.GetDepartureSeatMapParams{DepartureID: dep.ID, LayoutID: dep.LayoutID})
+	seatMap, err := q.GetDepartureSeatMap(ctx, store.GetDepartureSeatMapParams{DepartureID: dep.ID, LayoutID: dep.LayoutID,
+		FromSeq: int32(trip.Boarding), ToSeq: int32(trip.Alighting)})
 	if err != nil {
 		return store.Booking{}, err
 	}
@@ -200,7 +210,7 @@ func (s *Service) create(ctx context.Context, tx pgx.Tx, q *store.Queries, cc cr
 	promoSeats := make([]pricing.SeatAmount, len(assigned))
 	for i, c := range assigned {
 		cat := categories[*c.CategoryID]
-		gross := dep.BasePrice + cat.SurchargeAmount + c.ExtraSurcharge
+		gross := trip.UnitPrice + cat.SurchargeAmount + c.ExtraSurcharge
 		var eb int64
 		if early != nil && i < early.SeatsLeft {
 			eb = gross * early.Percent / 100
@@ -259,6 +269,7 @@ func (s *Service) create(ctx context.Context, tx pgx.Tx, q *store.Queries, cc cr
 		BillingName: apix.NilIfEmpty(strings.TrimSpace(in.BillingName)), BillingTaxID: apix.NilIfEmpty(strings.TrimSpace(in.BillingTaxID)),
 		PromoAmount: promoAmount, EarlyBirdAmount: earlyBirdTotal, ReferralAmount: referralAmount,
 		PromoCodeID: promoCodeID(promoCode), PromoCode: promoCodeText(promoCode),
+		BoardingSeq: int32(trip.Boarding), AlightingSeq: int32(trip.Alighting),
 	})
 	if err != nil {
 		return store.Booking{}, err
@@ -274,8 +285,9 @@ func (s *Service) create(ctx context.Context, tx pgx.Tx, q *store.Queries, cc cr
 		_, err := q.InsertBookingSeat(ctx, store.InsertBookingSeatParams{
 			CompanyID: dep.CompanyID, BookingID: b.ID, DepartureID: dep.ID, SeatCellID: l.cell.ID, SeatLabel: *l.cell.SeatLabel,
 			CategoryID: l.cat.ID, PassengerName: p.Name, PassengerPhone: passengerPhone,
-			BasePrice: dep.BasePrice, CategorySurcharge: l.catSurcharge, SeatSurcharge: l.seatSurcharge,
+			BasePrice: trip.UnitPrice, CategorySurcharge: l.catSurcharge, SeatSurcharge: l.seatSurcharge,
 			DiscountAmount: l.discount, TotalPrice: l.total, HoldExpiresAt: expiresAt, EarlyBirdAmount: l.earlyBird,
+			FromSeq: int32(trip.Boarding), ToSeq: int32(trip.Alighting),
 		})
 		if database.UniqueViolation(err) != "" {
 			return store.Booking{}, huma.Error409Conflict(fmt.Sprintf("Le siège %s vient d'être pris, choisissez-en un autre", *l.cell.SeatLabel))
@@ -513,10 +525,6 @@ func (s *Service) Cancel(ctx context.Context, tx pgx.Tx, q *store.Queries, b sto
 		return loyalty.Restore(ctx, q, b.CompanyID, b.CustomerID, b.ID, b.LoyaltyPointsUsed, "Réservation annulée")
 
 	case "confirmed":
-		dep, err := q.GetDeparture(ctx, b.DepartureID)
-		if err != nil {
-			return err
-		}
 		_, r, err := s.loadRules(ctx, q, b) // règles de la compagnie + avantage fidélité
 		if err != nil {
 			return err
@@ -529,7 +537,11 @@ func (s *Service) Cancel(ctx context.Context, tx pgx.Tx, q *store.Queries, b sto
 			return huma.Error409Conflict("Un passager a déjà embarqué : annulation impossible")
 		}
 		if !opt.ByStaff && !opt.SkipRules {
-			limit := dep.DepartureAt.Add(-time.Duration(r.cancelCutoffHours) * time.Hour)
+			boardingAt, err := q.BookingBoardingAt(ctx, b.ID)
+			if err != nil {
+				return err
+			}
+			limit := boardingAt.Add(-time.Duration(r.cancelCutoffHours) * time.Hour)
 			if time.Now().After(limit) {
 				return huma.Error409Conflict(fmt.Sprintf("Annulation possible jusqu'à %d h avant le départ. Contactez l'agence.", r.cancelCutoffHours))
 			}
@@ -666,4 +678,10 @@ func releaseOffers(ctx context.Context, q *store.Queries, bookingID uuid.UUID) e
 		return err
 	}
 	return q.ClearReferralBooking(ctx, &bookingID)
+}
+
+// departureOf : départ verrouillé vu comme un départ simple (calcul du trajet).
+func departureOf(d store.LockDepartureForBookingRow) store.Departure {
+	return store.Departure{ID: d.ID, CompanyID: d.CompanyID, RouteID: d.RouteID, BasePrice: d.BasePrice, Status: d.Status,
+		DepartureAt: d.DepartureAt}
 }

@@ -40,7 +40,7 @@ if ! command -v psql >/dev/null; then
 fi
 systemctl is-active --quiet postgresql || systemctl start postgresql
 PGVER=$(sudo -u postgres psql -Atc 'show server_version_num')
-[ "$PGVER" -ge 130000 ] || fail "PostgreSQL 13 ou plus récent requis (version $PGVER)"
+[ "$PGVER" -ge 150000 ] || fail "PostgreSQL 15 ou plus récent requis (version $PGVER)"
 echo "Nginx $(nginx -v 2>&1 | sed 's#.*/##'), PostgreSQL $(sudo -u postgres psql -Atc 'show server_version')"
 
 # Port libre, ou déjà occupé par cette API (relance du script).

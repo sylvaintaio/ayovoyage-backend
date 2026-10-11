@@ -347,7 +347,7 @@ func (s *Service) Assign(ctx context.Context, p auth.Principal, id, departureID 
 			return err
 		}
 		note := "Correspondance"
-		if dep.DestinationAgencyID == parcel.DestinationAgencyID {
+		if dep.DestinationAgencyID != nil && *dep.DestinationAgencyID == parcel.DestinationAgencyID {
 			note = "Trajet direct"
 		}
 		staffID := p.ID
@@ -450,8 +450,9 @@ func (s *Service) OnDepartureStatus(ctx context.Context, q *store.Queries, depar
 				return err
 			}
 		case "arrived":
-			if parcel.Status == "in_transit" {
-				if err := s.arrive(ctx, q, parcel, dep.DestinationAgencyID, nil); err != nil {
+			// Ligne qui finit hors agence (gare routière) : le colis reste à décharger à la main.
+			if parcel.Status == "in_transit" && dep.DestinationAgencyID != nil {
+				if err := s.arrive(ctx, q, parcel, *dep.DestinationAgencyID, nil); err != nil {
 					return err
 				}
 			}
@@ -500,7 +501,7 @@ func (s *Service) Receive(ctx context.Context, p auth.Principal, tracking string
 			return huma.Error409Conflict("Ce colis n'est pas en route (" + statusLabels[parcel.Status] + ")")
 		}
 		if parcel.DepartureID != nil {
-			if dep, err := q.GetDepartureRouteAgencies(ctx, *parcel.DepartureID); err == nil && dep.DestinationAgencyID != at {
+			if dep, err := q.GetDepartureRouteAgencies(ctx, *parcel.DepartureID); err == nil && dep.DestinationAgencyID != nil && *dep.DestinationAgencyID != at {
 				return huma.Error409Conflict("Ce colis voyage vers une autre agence : ne pas le décharger ici")
 			}
 		}

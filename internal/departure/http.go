@@ -4,6 +4,7 @@ package departure
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -15,10 +16,12 @@ import (
 	"busvoyage/internal/auth"
 	"busvoyage/internal/booking"
 	"busvoyage/internal/fleet"
+	"busvoyage/internal/itinerary"
 	"busvoyage/internal/jobs"
 	"busvoyage/internal/platform/apix"
 	"busvoyage/internal/platform/database"
 	"busvoyage/internal/pricing"
+	"busvoyage/internal/segment"
 	"busvoyage/internal/store"
 )
 
@@ -44,22 +47,28 @@ type ParcelHook interface {
 
 // ---------------------------------------------------------------- DTO
 
+// SearchResult : un départ vu par le voyageur, pour son trajet (arrêt de montée → arrêt de descente).
+// « origin » = arrêt de montée, « destination » = arrêt de descente ; les heures et le prix sont
+// ceux de ce trajet (un voyageur qui monte à Bohicon voit l'heure de passage à Bohicon).
 type SearchResult struct {
 	ID                    uuid.UUID       `json:"id"`
 	CompanyID             uuid.UUID       `json:"company_id"`
 	CompanyName           string          `json:"company_name"`
-	DepartureAt           time.Time       `json:"departure_at"`
-	ArrivalEta            time.Time       `json:"arrival_eta"`
-	DurationMinutes       int32           `json:"duration_minutes"`
-	BasePrice             int64           `json:"base_price" doc:"Tarif Standard (XOF)"`
+	DepartureAt           time.Time       `json:"departure_at" doc:"Heure prévue à l'arrêt de montée"`
+	ArrivalEta            time.Time       `json:"arrival_eta" doc:"Heure prévue à l'arrêt de descente"`
+	DurationMinutes       int32           `json:"duration_minutes" doc:"Durée du trajet du voyageur"`
+	BasePrice             int64           `json:"base_price" doc:"Prix Standard de ce trajet (XOF)"`
 	Status                string          `json:"status"`
 	RouteName             string          `json:"route_name"`
-	OriginCity            string          `json:"origin_city"`
-	OriginAgencyID        uuid.UUID       `json:"origin_agency_id"`
+	OriginCity            string          `json:"origin_city" doc:"Ville de montée"`
+	OriginAgencyID        uuid.UUID       `json:"origin_agency_id" doc:"Agence de montée"`
 	OriginAgencyName      string          `json:"origin_agency_name"`
-	DestinationCity       string          `json:"destination_city"`
-	DestinationAgencyID   uuid.UUID       `json:"destination_agency_id"`
-	DestinationAgencyName string          `json:"destination_agency_name"`
+	DestinationCity       string          `json:"destination_city" doc:"Ville de descente"`
+	DestinationAgencyID   *uuid.UUID      `json:"destination_agency_id,omitempty" doc:"Agence de descente, si l'arrêt en est une"`
+	DestinationAgencyName string          `json:"destination_agency_name" doc:"Arrêt de descente"`
+	BoardingSeq           int             `json:"boarding_seq" doc:"Indice de l'arrêt de montée (à renvoyer à la réservation)"`
+	AlightingSeq          int             `json:"alighting_seq" doc:"Indice de l'arrêt de descente"`
+	BusDepartureAt        time.Time       `json:"bus_departure_at" doc:"Heure de départ du car (premier arrêt)"`
 	BusModel              string          `json:"bus_model"`
 	BusAmenities          []string        `json:"bus_amenities"`
 	SeatCount             int32           `json:"seat_count"`
@@ -133,9 +142,10 @@ type SeatMap struct {
 
 type DepartureDetail struct {
 	SearchResult
-	OriginAgencyAddress string          `json:"origin_agency_address"`
+	OriginAgencyAddress string          `json:"origin_agency_address" doc:"Adresse de l'arrêt de montée"`
+	Stops               []DepartureStop `json:"stops" doc:"Arrêts du départ : montée possible si can_board, descente si can_alight"`
 	Categories          []CategoryPrice `json:"categories"`
-	SeatMap             SeatMap         `json:"seat_map"`
+	SeatMap             SeatMap         `json:"seat_map" doc:"États des sièges sur le trajet demandé"`
 }
 
 type AdminDeparture struct {
@@ -154,18 +164,25 @@ type AdminDeparture struct {
 	SeatCount    int32      `json:"seat_count"`
 	SoldSeats    int32      `json:"sold_seats"`
 	BoardedSeats int32      `json:"boarded_seats"`
+	PeakSeats    int32      `json:"peak_seats" doc:"Charge maximale sur un tronçon : places libres = seat_count - peak_seats (sold_seats compte les passagers, revente comprise)"`
+	// Fiche du départ uniquement :
+	Stops []DepartureStop `json:"stops,omitempty" doc:"Arrêts et heures prévues"`
+	Crew  []CrewMember    `json:"crew,omitempty" doc:"Contrôleur, chauffeur et autres membres"`
 }
 
 // ---------------------------------------------------------------- Plan de sièges
 
 // LoadSeatMap construit le plan d'un départ avec l'état de chaque siège.
 // includePassengers : informations nominatives réservées au personnel.
-func LoadSeatMap(ctx context.Context, q *store.Queries, companyID, departureID, layoutID uuid.UUID, basePrice int64, includePassengers bool) (SeatMap, []CategoryPrice, error) {
+// fromSeq, toSeq : trajet considéré (un siège pris ailleurs sur la ligne est libre ici).
+func LoadSeatMap(ctx context.Context, q *store.Queries, companyID, departureID, layoutID uuid.UUID, basePrice int64,
+	fromSeq, toSeq int, includePassengers bool) (SeatMap, []CategoryPrice, error) {
 	layout, err := q.GetSeatLayout(ctx, store.GetSeatLayoutParams{ID: layoutID, CompanyID: companyID})
 	if err != nil {
 		return SeatMap{}, nil, err
 	}
-	rows, err := q.GetDepartureSeatMap(ctx, store.GetDepartureSeatMapParams{DepartureID: departureID, LayoutID: layoutID})
+	rows, err := q.GetDepartureSeatMap(ctx, store.GetDepartureSeatMapParams{DepartureID: departureID, LayoutID: layoutID,
+		FromSeq: int32(fromSeq), ToSeq: int32(toSeq)})
 	if err != nil {
 		return SeatMap{}, nil, err
 	}
@@ -192,8 +209,9 @@ func LoadSeatMap(ctx context.Context, q *store.Queries, companyID, departureID, 
 				available[*r.CategoryID]++
 			}
 		}
-		if includePassengers {
-			cell.BookingID, cell.PassengerName = r.BookingID, r.PassengerName
+		if includePassengers && r.BookingID != "" {
+			id, name := uuid.MustParse(r.BookingID), r.PassengerName
+			cell.BookingID, cell.PassengerName = &id, &name
 		}
 		sm.Cells = append(sm.Cells, cell)
 	}
@@ -286,31 +304,50 @@ func (h *Handler) Register(api huma.API) {
 			out := &struct{ Body []SearchResult }{Body: []SearchResult{}}
 			err = h.DB.Tx(ctx, database.Public(), func(_ pgx.Tx, q *store.Queries) error {
 				rows, err := q.SearchDepartures(ctx, params)
+				if err != nil {
+					return err
+				}
 				eb := &earlyBirds{q: q, rules: map[uuid.UUID][]store.PricingRule{}}
+				prices := map[uuid.UUID]itinerary.Pricing{}
 				for _, r := range rows {
 					offer, err := eb.offer(ctx, r.CompanyID, r.RouteID, r.ID, r.DepartureAt)
 					if err != nil {
 						return err
 					}
+					pr, ok := prices[r.RouteID]
+					if !ok {
+						route, err := q.GetRoute(ctx, store.GetRouteParams{ID: r.RouteID, CompanyID: r.CompanyID})
+						if err != nil {
+							return err
+						}
+						if pr, err = segment.Pricing(ctx, q, route); err != nil {
+							return err
+						}
+						prices[r.RouteID] = pr
+					}
 					out.Body = append(out.Body, SearchResult{ID: r.ID, CompanyID: r.CompanyID, CompanyName: r.CompanyName,
-						DepartureAt: r.DepartureAt, ArrivalEta: r.ArrivalEta, DurationMinutes: r.DurationMinutes,
-						BasePrice: r.BasePrice, Status: r.Status, RouteName: r.RouteName, OriginCity: r.OriginCity,
-						OriginAgencyID: r.OriginAgencyID, OriginAgencyName: r.OriginAgencyName, DestinationCity: r.DestinationCity,
-						DestinationAgencyID: r.DestinationAgencyID, DestinationAgencyName: r.DestinationAgencyName,
-						BusModel: r.BusModel, BusAmenities: r.BusAmenities, SeatCount: r.SeatCount,
+						DepartureAt: r.BoardingAt, ArrivalEta: r.AlightingAt, DurationMinutes: int32(r.AlightingAt.Sub(r.BoardingAt).Minutes()),
+						BasePrice: itinerary.SegmentPrice(pr, r.BasePrice, r.BoardingCityID, r.AlightingCityID),
+						Status: r.Status, RouteName: r.RouteName, OriginCity: r.BoardingCity,
+						OriginAgencyID: derefID(r.BoardingAgencyID), OriginAgencyName: r.BoardingStopName, DestinationCity: r.AlightingCity,
+						DestinationAgencyName: r.AlightingStopName, BoardingSeq: int(r.BoardingSeq), AlightingSeq: int(r.AlightingSeq),
+						BusDepartureAt: r.DepartureAt, BusModel: r.BusModel, BusAmenities: r.BusAmenities, SeatCount: r.SeatCount,
 						AvailableSeats: max(r.AvailableSeats, 0), IncludedBaggageKg: r.IncludedBaggageKg, EarlyBird: offer})
 				}
-				return err
+				return nil
 			})
 			return out, apix.Err(err)
 		})
 
 	huma.Register(api, apix.WithDescription(apix.Op("get-public-departure", http.MethodGet, "/v1/public/departures/{id}", tagPublic,
 		"Détail d'un départ avec plan de sièges et tarifs par catégorie", apix.Public),
-		"États des sièges : available, held (bloqué pendant un paiement), sold, boarded, blocked. "+
-			"Le plan reflète en temps réel les ventes de tous les canaux (application, site, guichet)."),
+		"États des sièges sur le trajet demandé : available, held (bloqué pendant un paiement), sold, boarded, blocked. "+
+			"Le plan reflète en temps réel les ventes de tous les canaux (application, site, guichet). "+
+			"Sans `boarding`/`alighting` : premier arrêt → dernier arrêt."),
 		func(ctx context.Context, in *struct {
-			ID uuid.UUID `path:"id"`
+			ID        uuid.UUID `path:"id"`
+			Boarding  int       `query:"boarding" default:"-1" doc:"Indice de l'arrêt de montée (boarding_seq de la recherche)"`
+			Alighting int       `query:"alighting" default:"-1" doc:"Indice de l'arrêt de descente"`
 		}) (*struct{ Body DepartureDetail }, error) {
 			out := &struct{ Body DepartureDetail }{}
 			err := h.DB.Tx(ctx, database.Public(), func(_ pgx.Tx, q *store.Queries) error {
@@ -321,18 +358,29 @@ func (h *Handler) Register(api huma.API) {
 				if err != nil {
 					return err
 				}
+				dep := store.Departure{ID: d.ID, CompanyID: d.CompanyID, RouteID: d.RouteID, BasePrice: d.BasePrice}
+				trip, err := segment.Plan(ctx, q, dep, optSeq(in.Boarding), optSeq(in.Alighting), nil)
+				if err != nil {
+					return err
+				}
+				b, a := trip.BoardingStop(), trip.AlightingStop()
 				out.Body.SearchResult = SearchResult{ID: d.ID, CompanyID: d.CompanyID, CompanyName: d.CompanyName,
-					DepartureAt: d.DepartureAt, ArrivalEta: d.ArrivalEta, DurationMinutes: d.DurationMinutes,
-					BasePrice: d.BasePrice, Status: d.Status, RouteName: d.RouteName, OriginCity: d.OriginCity,
-					OriginAgencyID: d.OriginAgencyID, OriginAgencyName: d.OriginAgencyName, DestinationCity: d.DestinationCity,
-					DestinationAgencyID: d.DestinationAgencyID, DestinationAgencyName: d.DestinationAgencyName,
-					BusModel: d.BusModel, BusAmenities: d.BusAmenities, SeatCount: d.SeatCount, IncludedBaggageKg: d.IncludedBaggageKg}
-				out.Body.OriginAgencyAddress = d.OriginAgencyAddress
+					DepartureAt: b.ScheduledAt, ArrivalEta: a.ScheduledAt, DurationMinutes: int32(a.ScheduledAt.Sub(b.ScheduledAt).Minutes()),
+					BasePrice: trip.UnitPrice, Status: d.Status, RouteName: d.RouteName, OriginCity: b.CityName,
+					OriginAgencyID: derefID(b.AgencyID), OriginAgencyName: b.Name, DestinationCity: a.CityName,
+					DestinationAgencyID: a.AgencyID, DestinationAgencyName: a.Name, BoardingSeq: trip.Boarding, AlightingSeq: trip.Alighting,
+					BusDepartureAt: d.DepartureAt, BusModel: d.BusModel, BusAmenities: d.BusAmenities, SeatCount: d.SeatCount,
+					IncludedBaggageKg: d.IncludedBaggageKg}
+				out.Body.OriginAgencyAddress = b.Address
+				if out.Body.Stops, err = LoadStops(ctx, q, d.ID); err != nil {
+					return err
+				}
 				eb := &earlyBirds{q: q, rules: map[uuid.UUID][]store.PricingRule{}}
 				if out.Body.EarlyBird, err = eb.offer(ctx, d.CompanyID, d.RouteID, d.ID, d.DepartureAt); err != nil {
 					return err
 				}
-				out.Body.SeatMap, out.Body.Categories, err = LoadSeatMap(ctx, q, d.CompanyID, d.ID, d.LayoutID, d.BasePrice, false)
+				out.Body.SeatMap, out.Body.Categories, err = LoadSeatMap(ctx, q, d.CompanyID, d.ID, d.LayoutID, trip.UnitPrice,
+					trip.Boarding, trip.Alighting, false)
 				for _, c := range out.Body.SeatMap.Cells {
 					if c.State == "available" {
 						out.Body.AvailableSeats++
@@ -393,13 +441,14 @@ func (h *Handler) registerAdmin(api huma.API) {
 			"Refusé si le bus est indisponible ou déjà affecté sur ce créneau."),
 		func(ctx context.Context, in *struct {
 			Body struct {
-				RouteID     uuid.UUID  `json:"route_id"`
-				BusID       uuid.UUID  `json:"bus_id"`
-				DepartureAt time.Time  `json:"departure_at" doc:"Date et heure (RFC 3339, ex. 2026-10-12T07:00:00+01:00)"`
-				BasePrice   int64      `json:"base_price,omitempty" minimum:"0" doc:"Par défaut : tarif de la ligne"`
-				DriverID    *uuid.UUID `json:"driver_id,omitempty"`
-				AgentID     *uuid.UUID `json:"agent_id,omitempty" doc:"Convoyeur / agent d'embarquement"`
-				Notes       string     `json:"notes,omitempty" maxLength:"1000"`
+				RouteID     uuid.UUID         `json:"route_id"`
+				BusID       uuid.UUID         `json:"bus_id"`
+				DepartureAt time.Time         `json:"departure_at" doc:"Date et heure (RFC 3339, ex. 2026-10-12T07:00:00+01:00)"`
+				BasePrice   int64             `json:"base_price,omitempty" minimum:"0" doc:"Par défaut : tarif de la ligne"`
+				DriverID    *uuid.UUID        `json:"driver_id,omitempty" doc:"Chauffeur"`
+				AgentID     *uuid.UUID        `json:"agent_id,omitempty" doc:"Contrôleur à bord (scanne et vend en route)"`
+				Crew        []CrewMemberInput `json:"crew,omitempty" maxItems:"6" doc:"Autres membres : second chauffeur, aide…"`
+				Notes       string            `json:"notes,omitempty" maxLength:"1000"`
 			}
 		}) (*struct {
 			Status int
@@ -435,10 +484,10 @@ func (h *Handler) registerAdmin(api huma.API) {
 				if bus.Status != "active" {
 					return huma.Error409Conflict("Ce bus n'est pas disponible (statut : " + bus.Status + ")")
 				}
-				if err := ensureStaff(ctx, q, p.CompanyID, b.DriverID, b.AgentID); err != nil {
+				arrival := b.DepartureAt.Add(time.Duration(route.DurationMinutes) * time.Minute)
+				if err := crewConflict(ctx, q, p.CompanyID, nil, b.DepartureAt, arrival, b.AgentID, b.DriverID, b.Crew); err != nil {
 					return err
 				}
-				arrival := b.DepartureAt.Add(time.Duration(route.DurationMinutes) * time.Minute)
 				overlap, err := q.BusHasOverlappingDeparture(ctx, store.BusHasOverlappingDepartureParams{
 					BusID: bus.ID, DepartureAt: b.DepartureAt, ArrivalEta: arrival,
 				})
@@ -460,6 +509,14 @@ func (h *Handler) registerAdmin(api huma.API) {
 				if err != nil {
 					return err
 				}
+				// Copie figée des arrêts de la ligne (horaires compris) : modifier la ligne ensuite ne la touche pas.
+				if err := q.CopyRouteStopsToDeparture(ctx, store.CopyRouteStopsToDepartureParams{
+					DepartureID: d.ID, DepartureAt: d.DepartureAt, RouteID: route.ID}); err != nil {
+					return err
+				}
+				if err := saveCrew(ctx, q, p.CompanyID, d.ID, b.Crew); err != nil {
+					return err
+				}
 				out.Body = AdminDeparture{ID: d.ID, RouteID: d.RouteID, RouteName: route.Name, BusID: d.BusID, PlateNumber: bus.PlateNumber,
 					DepartureAt: d.DepartureAt, ArrivalEta: d.ArrivalEta, BasePrice: d.BasePrice, Status: d.Status,
 					DriverID: d.DriverID, AgentID: d.AgentID, Notes: d.Notes}
@@ -475,17 +532,18 @@ func (h *Handler) registerAdmin(api huma.API) {
 			"`dry_run: true` renvoie l'aperçu sans rien créer."),
 		func(ctx context.Context, in *struct {
 			Body struct {
-				RouteID   uuid.UUID  `json:"route_id"`
-				BusID     uuid.UUID  `json:"bus_id"`
-				Time      string     `json:"time" pattern:"^([01][0-9]|2[0-3]):[0-5][0-9]$" example:"07:00" doc:"Heure de départ (heure du Bénin)"`
-				FromDate  string     `json:"from_date" format:"date"`
-				ToDate    string     `json:"to_date" format:"date"`
-				Weekdays  []int      `json:"weekdays,omitempty" maxItems:"7" doc:"1 = lundi … 7 = dimanche ; vide = tous les jours"`
-				BasePrice int64      `json:"base_price,omitempty" minimum:"0" doc:"Par défaut : tarif de la ligne"`
-				DriverID  *uuid.UUID `json:"driver_id,omitempty"`
-				AgentID   *uuid.UUID `json:"agent_id,omitempty"`
-				Notes     string     `json:"notes,omitempty" maxLength:"1000"`
-				DryRun    bool       `json:"dry_run,omitempty" doc:"Aperçu sans création"`
+				RouteID   uuid.UUID         `json:"route_id"`
+				BusID     uuid.UUID         `json:"bus_id"`
+				Time      string            `json:"time" pattern:"^([01][0-9]|2[0-3]):[0-5][0-9]$" example:"07:00" doc:"Heure de départ (heure du Bénin)"`
+				FromDate  string            `json:"from_date" format:"date"`
+				ToDate    string            `json:"to_date" format:"date"`
+				Weekdays  []int             `json:"weekdays,omitempty" maxItems:"7" doc:"1 = lundi … 7 = dimanche ; vide = tous les jours"`
+				BasePrice int64             `json:"base_price,omitempty" minimum:"0" doc:"Par défaut : tarif de la ligne"`
+				DriverID  *uuid.UUID        `json:"driver_id,omitempty"`
+				AgentID   *uuid.UUID        `json:"agent_id,omitempty" doc:"Contrôleur à bord"`
+				Crew      []CrewMemberInput `json:"crew,omitempty" maxItems:"6"`
+				Notes     string            `json:"notes,omitempty" maxLength:"1000"`
+				DryRun    bool              `json:"dry_run,omitempty" doc:"Aperçu sans création"`
 			}
 		}) (*struct{ Body RecurringResult }, error) {
 			p := auth.MustFromContext(ctx)
@@ -516,9 +574,6 @@ func (h *Handler) registerAdmin(api huma.API) {
 				if bus.Status != "active" {
 					return huma.Error409Conflict("Ce bus n'est pas disponible (statut : " + bus.Status + ")")
 				}
-				if err := ensureStaff(ctx, q, p.CompanyID, b.DriverID, b.AgentID); err != nil {
-					return err
-				}
 				price := b.BasePrice
 				if price == 0 {
 					price = route.BasePrice
@@ -539,6 +594,14 @@ func (h *Handler) registerAdmin(api huma.API) {
 						out.Body.Skipped = append(out.Body.Skipped, SkippedDeparture{DepartureAt: at, Reason: "Bus déjà affecté sur ce créneau"})
 						continue
 					}
+					if err := crewConflict(ctx, q, p.CompanyID, nil, at, arrival, b.AgentID, b.DriverID, b.Crew); err != nil {
+						var se huma.StatusError
+						if errors.As(err, &se) && se.GetStatus() == http.StatusConflict {
+							out.Body.Skipped = append(out.Body.Skipped, SkippedDeparture{DepartureAt: at, Reason: se.Error()})
+							continue
+						}
+						return err
+					}
 					d := store.Departure{RouteID: route.ID, BusID: bus.ID, DepartureAt: at, ArrivalEta: arrival, BasePrice: price,
 						Status: "scheduled", DriverID: b.DriverID, AgentID: b.AgentID, Notes: b.Notes}
 					if !b.DryRun {
@@ -547,6 +610,13 @@ func (h *Handler) registerAdmin(api huma.API) {
 							DepartureAt: at, ArrivalEta: arrival, BasePrice: price,
 							DriverID: b.DriverID, AgentID: b.AgentID, Notes: b.Notes,
 						}); err != nil {
+							return err
+						}
+						if err := q.CopyRouteStopsToDeparture(ctx, store.CopyRouteStopsToDepartureParams{
+							DepartureID: d.ID, DepartureAt: d.DepartureAt, RouteID: route.ID}); err != nil {
+							return err
+						}
+						if err := saveCrew(ctx, q, p.CompanyID, d.ID, b.Crew); err != nil {
 							return err
 						}
 					}
@@ -602,7 +672,15 @@ func (h *Handler) registerAdmin(api huma.API) {
 						out.Body.Departure = x
 					}
 				}
-				out.Body.SeatMap, out.Body.Categories, err = LoadSeatMap(ctx, q, p.CompanyID, d.ID, d.LayoutID, d.BasePrice, true)
+				if out.Body.Departure.Stops, err = LoadStops(ctx, q, d.ID); err != nil {
+					return err
+				}
+				if out.Body.Departure.Crew, err = LoadCrew(ctx, q, d); err != nil {
+					return err
+				}
+				// Fiche du personnel : tout le trajet (un siège occupé sur au moins un tronçon apparaît pris).
+				last := max(len(out.Body.Departure.Stops)-1, 1)
+				out.Body.SeatMap, out.Body.Categories, err = LoadSeatMap(ctx, q, p.CompanyID, d.ID, d.LayoutID, d.BasePrice, 0, last, true)
 				return err
 			})
 			return out, apix.Err(err)
@@ -614,11 +692,12 @@ func (h *Handler) registerAdmin(api huma.API) {
 		func(ctx context.Context, in *struct {
 			ID   uuid.UUID `path:"id"`
 			Body struct {
-				DepartureAt time.Time  `json:"departure_at"`
-				BasePrice   int64      `json:"base_price" minimum:"1" doc:"S'applique aux nouvelles ventes uniquement"`
-				DriverID    *uuid.UUID `json:"driver_id,omitempty"`
-				AgentID     *uuid.UUID `json:"agent_id,omitempty"`
-				Notes       string     `json:"notes,omitempty" maxLength:"1000"`
+				DepartureAt time.Time         `json:"departure_at"`
+				BasePrice   int64             `json:"base_price" minimum:"1" doc:"S'applique aux nouvelles ventes uniquement"`
+				DriverID    *uuid.UUID        `json:"driver_id,omitempty"`
+				AgentID     *uuid.UUID        `json:"agent_id,omitempty" doc:"Contrôleur à bord"`
+				Crew        []CrewMemberInput `json:"crew,omitempty" maxItems:"6" doc:"Absent : autres membres inchangés ; [] : aucun"`
+				Notes       string            `json:"notes,omitempty" maxLength:"1000"`
 			}
 		}) (*struct{ Body AdminDeparture }, error) {
 			p := auth.MustFromContext(ctx)
@@ -635,10 +714,21 @@ func (h *Handler) registerAdmin(api huma.API) {
 				if before.Status != "scheduled" && before.Status != "boarding" {
 					return huma.Error409Conflict("Départ déjà parti ou annulé")
 				}
-				if err := ensureStaff(ctx, q, p.CompanyID, b.DriverID, b.AgentID); err != nil {
+				arrival := b.DepartureAt.Add(before.ArrivalEta.Sub(before.DepartureAt))
+				crew := b.Crew
+				if crew == nil { // champ absent : autres membres conservés
+					rows, err := q.ListDepartureCrew(ctx, before.ID)
+					if err != nil {
+						return err
+					}
+					crew = []CrewMemberInput{}
+					for _, m := range rows {
+						crew = append(crew, CrewMemberInput{StaffID: m.StaffID, Role: m.Role})
+					}
+				}
+				if err := crewConflict(ctx, q, p.CompanyID, &before.ID, b.DepartureAt, arrival, b.AgentID, b.DriverID, crew); err != nil {
 					return err
 				}
-				arrival := b.DepartureAt.Add(before.ArrivalEta.Sub(before.DepartureAt))
 				overlap, err := q.BusHasOverlappingDeparture(ctx, store.BusHasOverlappingDepartureParams{
 					BusID: before.BusID, ExcludeID: &before.ID, DepartureAt: b.DepartureAt, ArrivalEta: arrival,
 				})
@@ -654,7 +744,15 @@ func (h *Handler) registerAdmin(api huma.API) {
 				if err != nil {
 					return err
 				}
+				if err := saveCrew(ctx, q, p.CompanyID, d.ID, crew); err != nil {
+					return err
+				}
 				if !d.DepartureAt.Equal(before.DepartureAt) {
+					// Tous les arrêts sont décalés d'autant (heures prévues des voyageurs en aval comprises).
+					if err := q.RescheduleDepartureStops(ctx, store.RescheduleDepartureStopsParams{DepartureID: d.ID,
+						NewDepartureAt: d.DepartureAt, OldDepartureAt: before.DepartureAt}); err != nil {
+						return err
+					}
 					if err := h.Queue.InsertTx(ctx, tx, jobs.DepartureStatusArgs{DepartureID: d.ID, Status: "rescheduled"}); err != nil {
 						return err
 					}
@@ -717,7 +815,13 @@ func (h *Handler) registerAdmin(api huma.API) {
 				if err != nil {
 					return err
 				}
-				sm, err := q.GetDepartureSeatMap(ctx, store.GetDepartureSeatMapParams{DepartureID: d.ID, LayoutID: d.LayoutID})
+				// Un blocage vaut pour tout le trajet : le siège doit être libre sur tous les tronçons.
+				last, err := q.DepartureLastSeq(ctx, d.ID)
+				if err != nil {
+					return err
+				}
+				sm, err := q.GetDepartureSeatMap(ctx, store.GetDepartureSeatMapParams{DepartureID: d.ID, LayoutID: d.LayoutID,
+					FromSeq: 0, ToSeq: last})
 				if err != nil {
 					return err
 				}
@@ -765,7 +869,7 @@ func ListForStaff(ctx context.Context, q *store.Queries, params store.ListDepart
 	for _, r := range rows {
 		out = append(out, AdminDeparture{ID: r.ID, RouteID: r.RouteID, RouteName: r.RouteName, BusID: r.BusID, PlateNumber: r.PlateNumber,
 			DepartureAt: r.DepartureAt, ArrivalEta: r.ArrivalEta, BasePrice: r.BasePrice, Status: r.Status,
-			DriverID: r.DriverID, AgentID: r.AgentID, Notes: r.Notes, SeatCount: r.SeatCount, SoldSeats: r.SoldSeats, BoardedSeats: r.BoardedSeats})
+			DriverID: r.DriverID, AgentID: r.AgentID, Notes: r.Notes, SeatCount: r.SeatCount, SoldSeats: r.SoldSeats, BoardedSeats: r.BoardedSeats, PeakSeats: r.PeakSeats})
 	}
 	return out, err
 }
@@ -843,4 +947,19 @@ func recurringDates(from, to, hhmm string, weekdays []int) ([]time.Time, error) 
 		return nil, huma.Error422UnprocessableEntity(fmt.Sprintf("%d départs au plus par programmation", maxRecurringDepartures))
 	}
 	return out, nil
+}
+
+func derefID(id *uuid.UUID) uuid.UUID {
+	if id == nil {
+		return uuid.Nil
+	}
+	return *id
+}
+
+// optSeq : paramètre d'indice d'arrêt facultatif (-1 = non fourni).
+func optSeq(v int) *int {
+	if v < 0 {
+		return nil
+	}
+	return &v
 }

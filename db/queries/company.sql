@@ -76,11 +76,15 @@ JOIN companies co ON co.id = a.company_id
 WHERE a.slug = $1 AND a.is_active AND co.status = 'active';
 
 -- name: ListDestinationsFromAgency :many
+-- Villes où l'on peut descendre après être monté à cette agence (lignes actives).
 SELECT DISTINCT dc.name AS city_name, dc.slug AS city_slug
-FROM routes r
-JOIN agencies da ON da.id = r.destination_agency_id
-JOIN cities dc ON dc.id = da.city_id
-WHERE r.origin_agency_id = $1 AND r.is_active
+FROM route_stops b
+JOIN stop_points bsp ON bsp.id = b.stop_point_id
+JOIN routes r ON r.id = b.route_id
+JOIN route_stops a ON a.route_id = b.route_id AND a.seq > b.seq AND a.can_alight
+JOIN stop_points asp ON asp.id = a.stop_point_id
+JOIN cities dc ON dc.id = asp.city_id
+WHERE bsp.agency_id = $1 AND b.can_board AND r.is_active AND asp.city_id <> bsp.city_id
 ORDER BY dc.name;
 
 -- name: ListAgencies :many

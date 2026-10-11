@@ -72,7 +72,11 @@ func (h *Handler) loadDeparture(ctx context.Context, q *store.Queries, p auth.Pr
 	if err != nil {
 		return d, access{}, err
 	}
-	a := departureAccess(p, d, r.OriginAgencyID, r.DestinationAgencyID, time.Now())
+	destination := uuid.Nil // ligne qui finit hors agence
+	if r.DestinationAgencyID != nil {
+		destination = *r.DestinationAgencyID
+	}
+	a := departureAccess(p, d, r.OriginAgencyID, destination, time.Now())
 	if !a.allowed {
 		return d, a, apix.NotFound("Départ")
 	}

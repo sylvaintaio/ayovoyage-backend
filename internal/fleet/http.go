@@ -113,36 +113,76 @@ func toBus(b store.Bus) Bus {
 }
 
 type Route struct {
-	ID                    uuid.UUID `json:"id"`
-	OriginAgencyID        uuid.UUID `json:"origin_agency_id"`
-	OriginAgencyName      string    `json:"origin_agency_name,omitempty"`
-	OriginCity            string    `json:"origin_city,omitempty"`
-	DestinationAgencyID   uuid.UUID `json:"destination_agency_id"`
-	DestinationAgencyName string    `json:"destination_agency_name,omitempty"`
-	DestinationCity       string    `json:"destination_city,omitempty"`
-	Name                  string    `json:"name"`
-	BasePrice             int64     `json:"base_price"`
-	DurationMinutes       int32     `json:"duration_minutes"`
-	DistanceKm            *int32    `json:"distance_km,omitempty"`
-	IncludedBaggageKg     int32     `json:"included_baggage_kg"`
-	IsActive              bool      `json:"is_active"`
+	ID                    uuid.UUID   `json:"id"`
+	OriginAgencyID        uuid.UUID   `json:"origin_agency_id" doc:"Agence du premier arrêt"`
+	OriginAgencyName      string      `json:"origin_agency_name,omitempty"`
+	OriginCity            string      `json:"origin_city,omitempty"`
+	DestinationAgencyID   *uuid.UUID  `json:"destination_agency_id,omitempty" doc:"Agence du dernier arrêt (absente si la ligne finit hors agence)"`
+	DestinationAgencyName string      `json:"destination_agency_name,omitempty" doc:"Nom du dernier arrêt"`
+	DestinationCity       string      `json:"destination_city,omitempty"`
+	Name                  string      `json:"name"`
+	BasePrice             int64       `json:"base_price" doc:"Prix complet, Standard (XOF)"`
+	PricingMode           string      `json:"pricing_mode" enum:"flat,grid" doc:"flat : prix unique quelle que soit la descente ; grid : grille de ville à ville"`
+	DurationMinutes       int32       `json:"duration_minutes"`
+	DistanceKm            *int32      `json:"distance_km,omitempty"`
+	IncludedBaggageKg     int32       `json:"included_baggage_kg"`
+	IsActive              bool        `json:"is_active"`
+	Stops                 []RouteStop `json:"stops"`
+	Fares                 []RouteFare `json:"fares"`
 }
 
 func toRoute(r store.Route) Route {
 	return Route{ID: r.ID, OriginAgencyID: r.OriginAgencyID, DestinationAgencyID: r.DestinationAgencyID, Name: r.Name,
-		BasePrice: r.BasePrice, DurationMinutes: r.DurationMinutes, DistanceKm: r.DistanceKm,
-		IncludedBaggageKg: r.IncludedBaggageKg, IsActive: r.IsActive}
+		BasePrice: r.BasePrice, PricingMode: r.PricingMode, DurationMinutes: r.DurationMinutes, DistanceKm: r.DistanceKm,
+		IncludedBaggageKg: r.IncludedBaggageKg, IsActive: r.IsActive, Stops: []RouteStop{}, Fares: []RouteFare{}}
+}
+
+// withItinerary complète une ligne avec ses arrêts et sa grille.
+func withItinerary(ctx context.Context, q *store.Queries, rt Route) (Route, error) {
+	stops, fares, err := loadItinerary(ctx, q, rt.ID)
+	if err != nil {
+		return rt, err
+	}
+	rt.Stops, rt.Fares = stops, fares
+	if n := len(stops); n > 0 {
+		rt.OriginCity, rt.DestinationCity = stops[0].CityName, stops[n-1].CityName
+		rt.OriginAgencyName, rt.DestinationAgencyName = stops[0].StopName, stops[n-1].StopName
+	}
+	return rt, nil
 }
 
 type RouteInput struct {
-	OriginAgencyID      uuid.UUID `json:"origin_agency_id"`
-	DestinationAgencyID uuid.UUID `json:"destination_agency_id"`
-	Name                string    `json:"name" minLength:"2" maxLength:"120" example:"Cotonou → Parakou"`
-	BasePrice           int64     `json:"base_price" minimum:"1" doc:"Tarif Standard (XOF)"`
-	DurationMinutes     int32     `json:"duration_minutes" minimum:"1" maximum:"4320"`
-	DistanceKm          *int32    `json:"distance_km,omitempty" minimum:"1"`
-	IncludedBaggageKg   int32     `json:"included_baggage_kg" minimum:"0" maximum:"200" doc:"Bagage inclus (kg), ex. 20"`
-	IsActive            bool      `json:"is_active"`
+	Name              string           `json:"name" minLength:"2" maxLength:"120" example:"Cotonou → Parakou"`
+	BasePrice         int64            `json:"base_price" minimum:"1" doc:"Prix complet, Standard (XOF)"`
+	PricingMode       string           `json:"pricing_mode,omitempty" enum:"flat,grid" default:"flat"`
+	Stops             []RouteStopInput `json:"stops,omitempty" maxItems:"40" doc:"Arrêts dans l'ordre de passage (au moins 2)"`
+	Fares             []RouteFare      `json:"fares,omitempty" maxItems:"800" doc:"Grille (mode grid) : cases absentes = prix complet"`
+	DistanceKm        *int32           `json:"distance_km,omitempty" minimum:"1"`
+	IncludedBaggageKg int32            `json:"included_baggage_kg" minimum:"0" maximum:"200" doc:"Bagage inclus (kg), ex. 20"`
+	IsActive          bool             `json:"is_active"`
+	// Ancienne forme (2 agences), acceptée tant que des clients l'utilisent : ignorée si stops est fourni.
+	OriginAgencyID      *uuid.UUID `json:"origin_agency_id,omitempty" doc:"Ancienne forme : agence de départ"`
+	DestinationAgencyID *uuid.UUID `json:"destination_agency_id,omitempty" doc:"Ancienne forme : agence d'arrivée"`
+	DurationMinutes     int32      `json:"duration_minutes,omitempty" minimum:"0" maximum:"4320" doc:"Ancienne forme : durée"`
+}
+
+// stopsInput : arrêts fournis, sinon ancienne forme convertie en 2 arrêts.
+func (b RouteInput) stopsInput(ctx context.Context, q *store.Queries, companyID uuid.UUID) ([]RouteStopInput, error) {
+	if len(b.Stops) > 0 {
+		return b.Stops, nil
+	}
+	if b.OriginAgencyID == nil || b.DestinationAgencyID == nil || b.DurationMinutes <= 0 {
+		return nil, huma.Error422UnprocessableEntity("Indiquez les arrêts de la ligne")
+	}
+	if *b.OriginAgencyID == *b.DestinationAgencyID {
+		return nil, huma.Error422UnprocessableEntity("L'agence de départ et l'agence d'arrivée doivent être différentes")
+	}
+	for _, id := range []*uuid.UUID{b.OriginAgencyID, b.DestinationAgencyID} {
+		if err := ensureAgency(ctx, q, companyID, id); err != nil {
+			return nil, err
+		}
+	}
+	return legacyStops(ctx, q, *b.OriginAgencyID, *b.DestinationAgencyID, b.DurationMinutes)
 }
 
 // ---------------------------------------------------------------- Validation
@@ -501,13 +541,17 @@ func (h *Handler) Register(api huma.API) {
 			out := &struct{ Body []Route }{Body: []Route{}}
 			err := h.DB.Tx(ctx, p.Tenant(), func(_ pgx.Tx, q *store.Queries) error {
 				rows, err := q.ListRoutes(ctx, p.CompanyID)
+				if err != nil {
+					return err
+				}
 				for _, r := range rows {
-					rt := toRoute(r.Route)
-					rt.OriginAgencyName, rt.DestinationAgencyName = r.OriginAgencyName, r.DestinationAgencyName
-					rt.OriginCity, rt.DestinationCity = r.OriginCity, r.DestinationCity
+					rt, err := withItinerary(ctx, q, toRoute(r))
+					if err != nil {
+						return err
+					}
 					out.Body = append(out.Body, rt)
 				}
-				return err
+				return nil
 			})
 			return out, apix.Err(err)
 		})
@@ -516,44 +560,41 @@ func (h *Handler) Register(api huma.API) {
 		func(ctx context.Context, in *struct{ Body RouteInput }) (*struct{ Body Route }, error) {
 			p := auth.MustFromContext(ctx)
 			b := in.Body
-			if b.OriginAgencyID == b.DestinationAgencyID {
-				return nil, huma.Error422UnprocessableEntity("L'agence de départ et l'agence d'arrivée doivent être différentes")
-			}
 			out := &struct{ Body Route }{}
 			err := h.DB.Tx(ctx, p.Tenant(), func(_ pgx.Tx, q *store.Queries) error {
-				if err := ensureAgency(ctx, q, p.CompanyID, &b.OriginAgencyID); err != nil {
+				stops, err := b.stopsInput(ctx, q, p.CompanyID)
+				if err != nil {
 					return err
 				}
-				if err := ensureAgency(ctx, q, p.CompanyID, &b.DestinationAgencyID); err != nil {
-					return err
+				first, err := q.GetStopPoint(ctx, store.GetStopPointParams{ID: stops[0].StopPointID, CompanyID: p.CompanyID})
+				if err != nil || first.AgencyID == nil {
+					return huma.Error422UnprocessableEntity("Le premier arrêt doit être une agence où l'on monte")
 				}
 				r, err := q.CreateRoute(ctx, store.CreateRouteParams{
-					CompanyID: p.CompanyID, OriginAgencyID: b.OriginAgencyID, DestinationAgencyID: b.DestinationAgencyID,
-					Name: b.Name, BasePrice: b.BasePrice, DurationMinutes: b.DurationMinutes, DistanceKm: b.DistanceKm,
-					IncludedBaggageKg: b.IncludedBaggageKg, IsActive: b.IsActive,
+					CompanyID: p.CompanyID, OriginAgencyID: *first.AgencyID, Name: b.Name, BasePrice: b.BasePrice,
+					DurationMinutes: 1, DistanceKm: b.DistanceKm, IncludedBaggageKg: b.IncludedBaggageKg, IsActive: b.IsActive,
 				})
 				if err != nil {
 					return err
 				}
-				out.Body = toRoute(r)
+				if r, err = saveItinerary(ctx, q, p.CompanyID, r.ID, b.BasePrice, b.PricingMode, stops, b.Fares); err != nil {
+					return err
+				}
+				if out.Body, err = withItinerary(ctx, q, toRoute(r)); err != nil {
+					return err
+				}
 				return apix.Audit(ctx, q, &p.CompanyID, "route.created", "route", r.ID.String(), nil, out.Body)
 			})
 			return out, apix.Err(err)
 		})
 
 	huma.Register(api, apix.WithDescription(apix.Op("update-route", http.MethodPut, "/v1/admin/routes/{id}", tagFleet,
-		"Modifier une ligne (tarif, durée…)", apix.Staff, admin...),
-		"Les agences d'une ligne ne sont pas modifiables. Le nouveau tarif s'applique aux départs créés ensuite."),
+		"Modifier une ligne (arrêts, tarifs, grille…)", apix.Staff, admin...),
+		"Les nouveaux arrêts, tarifs et grille s'appliquent aux départs créés ensuite : les départs existants "+
+			"gardent leurs arrêts et les billets vendus ne changent pas. Sans `stops`, les arrêts sont conservés."),
 		func(ctx context.Context, in *struct {
 			ID   uuid.UUID `path:"id"`
-			Body struct {
-				Name              string `json:"name" minLength:"2" maxLength:"120"`
-				BasePrice         int64  `json:"base_price" minimum:"1"`
-				DurationMinutes   int32  `json:"duration_minutes" minimum:"1" maximum:"4320"`
-				DistanceKm        *int32 `json:"distance_km,omitempty" minimum:"1"`
-				IncludedBaggageKg int32  `json:"included_baggage_kg" minimum:"0" maximum:"200"`
-				IsActive          bool   `json:"is_active"`
-			}
+			Body RouteInput
 		}) (*struct{ Body Route }, error) {
 			p := auth.MustFromContext(ctx)
 			b := in.Body
@@ -563,15 +604,36 @@ func (h *Handler) Register(api huma.API) {
 				if err != nil {
 					return err
 				}
+				prev, err := withItinerary(ctx, q, toRoute(before))
+				if err != nil {
+					return err
+				}
 				r, err := q.UpdateRoute(ctx, store.UpdateRouteParams{
-					ID: in.ID, CompanyID: p.CompanyID, Name: b.Name, BasePrice: b.BasePrice, DurationMinutes: b.DurationMinutes,
+					ID: in.ID, CompanyID: p.CompanyID, Name: b.Name, BasePrice: b.BasePrice, DurationMinutes: before.DurationMinutes,
 					DistanceKm: b.DistanceKm, IncludedBaggageKg: b.IncludedBaggageKg, IsActive: b.IsActive,
 				})
 				if err != nil {
 					return err
 				}
-				out.Body = toRoute(r)
-				return apix.Audit(ctx, q, &p.CompanyID, "route.updated", "route", r.ID.String(), toRoute(before), out.Body)
+				// Arrêts fournis : remplacés. Sinon conservés (la grille et le mode peuvent changer seuls).
+				stops := b.Stops
+				if len(stops) == 0 {
+					for _, s := range prev.Stops {
+						stops = append(stops, RouteStopInput{StopPointID: s.StopPointID, OffsetMinutes: s.OffsetMinutes,
+							PauseMinutes: s.PauseMinutes, CanBoard: s.CanBoard, CanAlight: s.CanAlight})
+					}
+				}
+				mode, fares := b.PricingMode, b.Fares
+				if mode == "" {
+					mode, fares = before.PricingMode, prev.Fares
+				}
+				if r, err = saveItinerary(ctx, q, p.CompanyID, r.ID, b.BasePrice, mode, stops, fares); err != nil {
+					return err
+				}
+				if out.Body, err = withItinerary(ctx, q, toRoute(r)); err != nil {
+					return err
+				}
+				return apix.Audit(ctx, q, &p.CompanyID, "route.updated", "route", r.ID.String(), prev, out.Body)
 			})
 			return out, apix.Err(err)
 		})

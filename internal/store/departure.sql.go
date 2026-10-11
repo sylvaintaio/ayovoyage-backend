@@ -149,15 +149,15 @@ const getDepartureDetail = `-- name: GetDepartureDetail :one
 SELECT d.id, d.company_id, d.route_id, d.layout_id, d.departure_at, d.arrival_eta, d.base_price, d.status,
        r.name AS route_name, r.duration_minutes, r.included_baggage_kg,
        oa.id AS origin_agency_id, oa.name AS origin_agency_name, oa.address AS origin_agency_address, oc.name AS origin_city,
-       da.id AS destination_agency_id, da.name AS destination_agency_name, dc.name AS destination_city,
+       r.destination_agency_id, rt.destination_stop_name AS destination_agency_name, dc.name AS destination_city,
        co.name AS company_name, co.slug AS company_slug, co.sales_cutoff_minutes,
        b.model AS bus_model, b.amenities AS bus_amenities, l.seat_count
 FROM departures d
 JOIN routes r ON r.id = d.route_id
 JOIN agencies oa ON oa.id = r.origin_agency_id
 JOIN cities oc ON oc.id = oa.city_id
-JOIN agencies da ON da.id = r.destination_agency_id
-JOIN cities dc ON dc.id = da.city_id
+JOIN route_terminals rt ON rt.route_id = r.id
+JOIN cities dc ON dc.id = rt.destination_city_id
 JOIN companies co ON co.id = d.company_id
 JOIN buses b ON b.id = d.bus_id
 JOIN seat_layouts l ON l.id = d.layout_id
@@ -180,7 +180,7 @@ type GetDepartureDetailRow struct {
 	OriginAgencyName      string
 	OriginAgencyAddress   string
 	OriginCity            string
-	DestinationAgencyID   uuid.UUID
+	DestinationAgencyID   *uuid.UUID
 	DestinationAgencyName string
 	DestinationCity       string
 	CompanyName           string
@@ -229,23 +229,33 @@ SELECT c.id, c.row_index, c.col_index, c.kind, c.seat_label, c.category_id, c.ex
        (CASE
             WHEN c.kind <> 'seat' THEN 'none'
             WHEN blk.seat_cell_id IS NOT NULL THEN 'blocked'
-            WHEN t.status = 'used' THEN 'boarded'
-            WHEN bs.status = 'sold' THEN 'sold'
-            WHEN bs.status = 'held' AND bs.hold_expires_at > now() THEN 'held'
+            WHEN occ.ticket_status = 'used' THEN 'boarded'
+            WHEN occ.status = 'sold' THEN 'sold'
+            WHEN occ.status = 'held' THEN 'held'
             ELSE 'available'
         END)::text AS state,
-       bs.booking_id, bs.passenger_name
+       -- Texte vide pour un siège libre (sqlc ne déduit pas la nullabilité d'une sous-requête jointe à gauche).
+       COALESCE(occ.booking_id::text, '')::text AS booking_id,
+       COALESCE(occ.passenger_name, '')::text AS passenger_name
 FROM seat_layout_cells c
-LEFT JOIN booking_seats bs
-       ON bs.seat_cell_id = c.id AND bs.departure_id = $1 AND bs.status IN ('held', 'sold')
-LEFT JOIN tickets t ON t.booking_seat_id = bs.id
+LEFT JOIN (
+    SELECT DISTINCT ON (bs.seat_cell_id) bs.seat_cell_id, bs.status, bs.booking_id, bs.passenger_name, t.status AS ticket_status
+    FROM booking_seats bs
+    LEFT JOIN tickets t ON t.booking_seat_id = bs.id
+    WHERE bs.departure_id = $1
+      AND (bs.status = 'sold' OR (bs.status = 'held' AND bs.hold_expires_at > now()))
+      AND bs.from_seq < $2::int AND bs.to_seq > $3::int
+    ORDER BY bs.seat_cell_id, (bs.status = 'sold') DESC, bs.from_seq
+) occ ON occ.seat_cell_id = c.id
 LEFT JOIN departure_blocked_seats blk ON blk.seat_cell_id = c.id AND blk.departure_id = $1
-WHERE c.layout_id = $2
+WHERE c.layout_id = $4
 ORDER BY c.row_index, c.col_index
 `
 
 type GetDepartureSeatMapParams struct {
 	DepartureID uuid.UUID
+	ToSeq       int32
+	FromSeq     int32
 	LayoutID    uuid.UUID
 }
 
@@ -259,14 +269,20 @@ type GetDepartureSeatMapRow struct {
 	ExtraSurcharge int64
 	Attributes     []string
 	State          string
-	BookingID      *uuid.UUID
-	PassengerName  *string
+	BookingID      string
+	PassengerName  string
 }
 
-// État de chaque case du plan pour un départ. L'index unique partiel garantit
-// au plus une ligne booking_seats active par siège : pas de doublon possible.
+// État de chaque case du plan sur le tronçon [from_seq, to_seq) : un siège est pris
+// s'il est réservé ou vendu sur au moins un tronçon élémentaire de cet intervalle.
+// Tout le trajet : from_seq = 0, to_seq = dernier arrêt.
 func (q *Queries) GetDepartureSeatMap(ctx context.Context, arg GetDepartureSeatMapParams) ([]GetDepartureSeatMapRow, error) {
-	rows, err := q.db.Query(ctx, getDepartureSeatMap, arg.DepartureID, arg.LayoutID)
+	rows, err := q.db.Query(ctx, getDepartureSeatMap,
+		arg.DepartureID,
+		arg.ToSeq,
+		arg.FromSeq,
+		arg.LayoutID,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -300,7 +316,12 @@ func (q *Queries) GetDepartureSeatMap(ctx context.Context, arg GetDepartureSeatM
 const listDepartures = `-- name: ListDepartures :many
 SELECT d.id, d.company_id, d.route_id, d.bus_id, d.layout_id, d.departure_at, d.arrival_eta, d.base_price, d.status, d.driver_id, d.agent_id, d.notes, d.created_at, d.updated_at, r.name AS route_name, b.plate_number, l.seat_count,
        (SELECT count(*) FROM booking_seats bs WHERE bs.departure_id = d.id AND bs.status = 'sold')::int AS sold_seats,
-       (SELECT count(*) FROM tickets t WHERE t.departure_id = d.id AND t.status = 'used')::int AS boarded_seats
+       (SELECT count(*) FROM tickets t WHERE t.departure_id = d.id AND t.status = 'used')::int AS boarded_seats,
+       COALESCE((SELECT max(n) FROM (
+           SELECT count(DISTINCT g.seat_cell_id) AS n FROM booking_seat_segments g
+           JOIN booking_seats x ON x.id = g.booking_seat_id
+           WHERE g.departure_id = d.id AND x.status = 'sold'
+           GROUP BY g.segment) loads), 0)::int AS peak_seats
 FROM departures d
 JOIN routes r ON r.id = d.route_id
 JOIN buses b ON b.id = d.bus_id
@@ -308,9 +329,12 @@ JOIN seat_layouts l ON l.id = d.layout_id
 WHERE d.company_id = $1
   AND d.departure_at >= $2 AND d.departure_at < $3
   AND ($4::uuid IS NULL OR d.route_id = $4::uuid)
-  AND ($5::uuid IS NULL OR r.origin_agency_id = $5::uuid)
+  AND ($5::uuid IS NULL OR EXISTS (
+        SELECT 1 FROM departure_stops ds JOIN stop_points sp ON sp.id = ds.stop_point_id
+        WHERE ds.departure_id = d.id AND ds.can_board AND sp.agency_id = $5::uuid))
   AND ($6::text IS NULL OR d.status = $6::text)
-  AND ($7::uuid IS NULL OR d.agent_id = $7::uuid OR d.driver_id = $7::uuid)
+  AND ($7::uuid IS NULL OR d.agent_id = $7::uuid OR d.driver_id = $7::uuid
+       OR EXISTS (SELECT 1 FROM departure_crew c WHERE c.departure_id = d.id AND c.staff_id = $7::uuid))
 ORDER BY d.departure_at
 `
 
@@ -344,8 +368,13 @@ type ListDeparturesRow struct {
 	SeatCount    int32
 	SoldSeats    int32
 	BoardedSeats int32
+	PeakSeats    int32
 }
 
+// sold_seats : passagers vendus (un siège revendu après une descente compte deux fois) ;
+// peak_seats : charge maximale du car sur un tronçon (places réellement occupées au plus fort).
+// Filtre agence : départs qui s'arrêtent à cette agence pour embarquer (pas seulement ceux qui en partent).
+// Filtre personnel : contrôleur, chauffeur ou autre membre de l'équipage.
 func (q *Queries) ListDepartures(ctx context.Context, arg ListDeparturesParams) ([]ListDeparturesRow, error) {
 	rows, err := q.db.Query(ctx, listDepartures,
 		arg.CompanyID,
@@ -383,6 +412,7 @@ func (q *Queries) ListDepartures(ctx context.Context, arg ListDeparturesParams) 
 			&i.SeatCount,
 			&i.SoldSeats,
 			&i.BoardedSeats,
+			&i.PeakSeats,
 		); err != nil {
 			return nil, err
 		}
@@ -395,23 +425,25 @@ func (q *Queries) ListDepartures(ctx context.Context, arg ListDeparturesParams) 
 }
 
 const listUpcomingDeparturesFromAgency = `-- name: ListUpcomingDeparturesFromAgency :many
-SELECT d.id, d.departure_at, d.arrival_eta, d.base_price, d.status, dc.name AS destination_city,
-       da.name AS destination_agency_name,
+SELECT d.id, bs.scheduled_at AS departure_at, d.arrival_eta, d.base_price, d.status,
+       dc.name AS destination_city, rt.destination_stop_name AS destination_agency_name,
        (l.seat_count
-          - (SELECT count(*) FROM booking_seats bs
-             WHERE bs.departure_id = d.id
-               AND (bs.status = 'sold' OR (bs.status = 'held' AND bs.hold_expires_at > now())))
+          - (SELECT count(DISTINCT g.seat_cell_id) FROM booking_seat_segments g
+             JOIN booking_seats x ON x.id = g.booking_seat_id
+             WHERE g.departure_id = d.id AND g.segment >= bs.seq
+               AND (x.status = 'sold' OR (x.status = 'held' AND x.hold_expires_at > now())))
           - (SELECT count(*) FROM departure_blocked_seats x WHERE x.departure_id = d.id))::int AS available_seats
 FROM departures d
-JOIN routes r ON r.id = d.route_id
-JOIN agencies da ON da.id = r.destination_agency_id
-JOIN cities dc ON dc.id = da.city_id
+JOIN departure_stops bs ON bs.departure_id = d.id AND bs.can_board
+JOIN stop_points bsp ON bsp.id = bs.stop_point_id
+JOIN route_terminals rt ON rt.route_id = d.route_id
+JOIN cities dc ON dc.id = rt.destination_city_id
 JOIN seat_layouts l ON l.id = d.layout_id
-WHERE r.origin_agency_id = $1
-  AND d.status IN ('scheduled', 'boarding')
-  AND d.departure_at > now()
-  AND d.departure_at < now() + interval '3 days'
-ORDER BY d.departure_at
+WHERE bsp.agency_id = $1
+  AND d.status IN ('scheduled', 'boarding', 'departed')
+  AND bs.scheduled_at > now()
+  AND bs.scheduled_at < now() + interval '3 days'
+ORDER BY bs.scheduled_at
 LIMIT 30
 `
 
@@ -426,8 +458,9 @@ type ListUpcomingDeparturesFromAgencyRow struct {
 	AvailableSeats        int32
 }
 
-func (q *Queries) ListUpcomingDeparturesFromAgency(ctx context.Context, originAgencyID uuid.UUID) ([]ListUpcomingDeparturesFromAgencyRow, error) {
-	rows, err := q.db.Query(ctx, listUpcomingDeparturesFromAgency, originAgencyID)
+// Prochains départs où l'on monte à cette agence (premier arrêt ou arrêt intermédiaire).
+func (q *Queries) ListUpcomingDeparturesFromAgency(ctx context.Context, agencyID *uuid.UUID) ([]ListUpcomingDeparturesFromAgencyRow, error) {
+	rows, err := q.db.Query(ctx, listUpcomingDeparturesFromAgency, agencyID)
 	if err != nil {
 		return nil, err
 	}
@@ -457,71 +490,98 @@ func (q *Queries) ListUpcomingDeparturesFromAgency(ctx context.Context, originAg
 
 const searchDepartures = `-- name: SearchDepartures :many
 SELECT d.id, d.company_id, d.route_id, d.departure_at, d.arrival_eta, d.base_price, d.status,
-       r.name AS route_name, r.duration_minutes, r.included_baggage_kg,
-       oa.id AS origin_agency_id, oa.name AS origin_agency_name, oc.name AS origin_city,
-       da.id AS destination_agency_id, da.name AS destination_agency_name, dc.name AS destination_city,
+       r.name AS route_name, r.included_baggage_kg, r.pricing_mode, r.base_price AS route_price,
+       bs.seq AS boarding_seq, bs.scheduled_at AS boarding_at, bsp.name AS boarding_stop_name, bsp.agency_id AS boarding_agency_id,
+       bc.id AS boarding_city_id, bc.name AS boarding_city,
+       al.seq AS alighting_seq, al.scheduled_at AS alighting_at, asp.name AS alighting_stop_name,
+       ac.id AS alighting_city_id, ac.name AS alighting_city,
        co.name AS company_name, co.slug AS company_slug,
        b.model AS bus_model, b.amenities AS bus_amenities, l.seat_count,
        (l.seat_count
-          - (SELECT count(*) FROM booking_seats bs
-             WHERE bs.departure_id = d.id
-               AND (bs.status = 'sold' OR (bs.status = 'held' AND bs.hold_expires_at > now())))
+          - (SELECT count(DISTINCT g.seat_cell_id) FROM booking_seat_segments g
+             JOIN booking_seats x ON x.id = g.booking_seat_id
+             WHERE g.departure_id = d.id AND g.segment >= bs.seq AND g.segment < al.seq
+               AND (x.status = 'sold' OR (x.status = 'held' AND x.hold_expires_at > now())))
           - (SELECT count(*) FROM departure_blocked_seats x WHERE x.departure_id = d.id))::int AS available_seats
 FROM departures d
 JOIN routes r ON r.id = d.route_id
-JOIN agencies oa ON oa.id = r.origin_agency_id
-JOIN cities oc ON oc.id = oa.city_id
-JOIN agencies da ON da.id = r.destination_agency_id
-JOIN cities dc ON dc.id = da.city_id
+JOIN departure_stops bs ON bs.departure_id = d.id AND bs.can_board
+JOIN stop_points bsp ON bsp.id = bs.stop_point_id
+JOIN cities bc ON bc.id = bsp.city_id
+JOIN LATERAL (
+    SELECT a.seq, a.scheduled_at, a.stop_point_id
+    FROM departure_stops a
+    JOIN stop_points ap ON ap.id = a.stop_point_id
+    JOIN cities acx ON acx.id = ap.city_id
+    WHERE a.departure_id = d.id AND a.can_alight AND a.seq > bs.seq AND acx.slug = $1
+    ORDER BY a.seq
+    LIMIT 1
+) al ON true
+JOIN stop_points asp ON asp.id = al.stop_point_id
+JOIN cities ac ON ac.id = asp.city_id
 JOIN companies co ON co.id = d.company_id
 JOIN buses b ON b.id = d.bus_id
 JOIN seat_layouts l ON l.id = d.layout_id
-WHERE oc.slug = $1 AND dc.slug = $2
-  AND d.departure_at >= $3 AND d.departure_at < $4
-  AND d.status IN ('scheduled', 'boarding')
-  AND d.departure_at > now() + make_interval(mins => co.sales_cutoff_minutes)
+WHERE bc.slug = $2 AND ac.id <> bc.id
+  AND bs.scheduled_at >= $3 AND bs.scheduled_at < $4
+  AND d.status IN ('scheduled', 'boarding', 'departed')
+  AND (d.status <> 'departed' OR bs.seq > 0)
+  AND bs.scheduled_at > now() + make_interval(mins => co.sales_cutoff_minutes)
+  AND NOT EXISTS (SELECT 1 FROM departure_stop_visits v
+                  WHERE v.departure_id = d.id AND v.seq = bs.seq AND v.departed_at IS NOT NULL)
   AND co.status = 'active'
   AND ($5::uuid IS NULL OR d.company_id = $5::uuid)
-ORDER BY d.departure_at
+ORDER BY bs.scheduled_at
 `
 
 type SearchDeparturesParams struct {
-	FromCity  string
 	ToCity    string
+	FromCity  string
 	FromTs    time.Time
 	ToTs      time.Time
 	CompanyID *uuid.UUID
 }
 
 type SearchDeparturesRow struct {
-	ID                    uuid.UUID
-	CompanyID             uuid.UUID
-	RouteID               uuid.UUID
-	DepartureAt           time.Time
-	ArrivalEta            time.Time
-	BasePrice             int64
-	Status                string
-	RouteName             string
-	DurationMinutes       int32
-	IncludedBaggageKg     int32
-	OriginAgencyID        uuid.UUID
-	OriginAgencyName      string
-	OriginCity            string
-	DestinationAgencyID   uuid.UUID
-	DestinationAgencyName string
-	DestinationCity       string
-	CompanyName           string
-	CompanySlug           string
-	BusModel              string
-	BusAmenities          []string
-	SeatCount             int32
-	AvailableSeats        int32
+	ID                uuid.UUID
+	CompanyID         uuid.UUID
+	RouteID           uuid.UUID
+	DepartureAt       time.Time
+	ArrivalEta        time.Time
+	BasePrice         int64
+	Status            string
+	RouteName         string
+	IncludedBaggageKg int32
+	PricingMode       string
+	RoutePrice        int64
+	BoardingSeq       int32
+	BoardingAt        time.Time
+	BoardingStopName  string
+	BoardingAgencyID  *uuid.UUID
+	BoardingCityID    uuid.UUID
+	BoardingCity      string
+	AlightingSeq      int32
+	AlightingAt       time.Time
+	AlightingStopName string
+	AlightingCityID   uuid.UUID
+	AlightingCity     string
+	CompanyName       string
+	CompanySlug       string
+	BusModel          string
+	BusAmenities      []string
+	SeatCount         int32
+	AvailableSeats    int32
 }
 
+// Départs qui desservent la ville de montée puis la ville de descente (n'importe quels arrêts
+// de la ligne, pas seulement ses extrémités). Une ligne par agence de montée possible ;
+// descente au premier arrêt de la ville d'arrivée. Places libres comptées sur ce tronçon.
+// Vente possible tant que le car n'a pas quitté l'arrêt de montée (journal des arrêts),
+// et en ligne jusqu'à l'heure prévue à cet arrêt moins le délai de vente.
 func (q *Queries) SearchDepartures(ctx context.Context, arg SearchDeparturesParams) ([]SearchDeparturesRow, error) {
 	rows, err := q.db.Query(ctx, searchDepartures,
-		arg.FromCity,
 		arg.ToCity,
+		arg.FromCity,
 		arg.FromTs,
 		arg.ToTs,
 		arg.CompanyID,
@@ -542,14 +602,20 @@ func (q *Queries) SearchDepartures(ctx context.Context, arg SearchDeparturesPara
 			&i.BasePrice,
 			&i.Status,
 			&i.RouteName,
-			&i.DurationMinutes,
 			&i.IncludedBaggageKg,
-			&i.OriginAgencyID,
-			&i.OriginAgencyName,
-			&i.OriginCity,
-			&i.DestinationAgencyID,
-			&i.DestinationAgencyName,
-			&i.DestinationCity,
+			&i.PricingMode,
+			&i.RoutePrice,
+			&i.BoardingSeq,
+			&i.BoardingAt,
+			&i.BoardingStopName,
+			&i.BoardingAgencyID,
+			&i.BoardingCityID,
+			&i.BoardingCity,
+			&i.AlightingSeq,
+			&i.AlightingAt,
+			&i.AlightingStopName,
+			&i.AlightingCityID,
+			&i.AlightingCity,
 			&i.CompanyName,
 			&i.CompanySlug,
 			&i.BusModel,

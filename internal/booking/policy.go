@@ -120,10 +120,12 @@ func (s *Service) StaffPolicy(ctx context.Context, q *store.Queries, b store.Boo
 
 func (s *Service) policy(ctx context.Context, q *store.Queries, b store.Booking, now time.Time, staff bool) (BookingPolicy, error) {
 	out := BookingPolicy{Currency: b.Currency}
-	dep, err := q.GetDeparture(ctx, b.DepartureID)
+	// Délais comptés depuis l'heure prévue à l'arrêt de montée du voyageur.
+	boardingAt, err := q.BookingBoardingAt(ctx, b.ID)
 	if err != nil {
 		return out, err
 	}
+	dep := struct{ DepartureAt time.Time }{boardingAt}
 	company, r, err := s.loadRules(ctx, q, b)
 	if err != nil {
 		return out, err

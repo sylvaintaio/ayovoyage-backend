@@ -64,13 +64,13 @@ INSERT INTO routes (company_id, origin_agency_id, destination_agency_id, name, b
                     duration_minutes, distance_km, included_baggage_kg, is_active)
 VALUES ($1, $2, $3, $4, $5,
         $6, $7, $8, $9)
-RETURNING id, company_id, origin_agency_id, destination_agency_id, name, base_price, duration_minutes, distance_km, included_baggage_kg, is_active, created_at, updated_at
+RETURNING id, company_id, origin_agency_id, destination_agency_id, name, base_price, duration_minutes, distance_km, included_baggage_kg, is_active, created_at, updated_at, pricing_mode
 `
 
 type CreateRouteParams struct {
 	CompanyID           uuid.UUID
 	OriginAgencyID      uuid.UUID
-	DestinationAgencyID uuid.UUID
+	DestinationAgencyID *uuid.UUID
 	Name                string
 	BasePrice           int64
 	DurationMinutes     int32
@@ -105,6 +105,7 @@ func (q *Queries) CreateRoute(ctx context.Context, arg CreateRouteParams) (Route
 		&i.IsActive,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.PricingMode,
 	)
 	return i, err
 }
@@ -229,7 +230,7 @@ func (q *Queries) GetBus(ctx context.Context, arg GetBusParams) (Bus, error) {
 }
 
 const getRoute = `-- name: GetRoute :one
-SELECT id, company_id, origin_agency_id, destination_agency_id, name, base_price, duration_minutes, distance_km, included_baggage_kg, is_active, created_at, updated_at FROM routes WHERE id = $1 AND company_id = $2
+SELECT id, company_id, origin_agency_id, destination_agency_id, name, base_price, duration_minutes, distance_km, included_baggage_kg, is_active, created_at, updated_at, pricing_mode FROM routes WHERE id = $1 AND company_id = $2
 `
 
 type GetRouteParams struct {
@@ -253,6 +254,7 @@ func (q *Queries) GetRoute(ctx context.Context, arg GetRouteParams) (Route, erro
 		&i.IsActive,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.PricingMode,
 	)
 	return i, err
 }
@@ -407,52 +409,34 @@ func (q *Queries) ListBuses(ctx context.Context, companyID uuid.UUID) ([]ListBus
 
 const listRoutes = `-- name: ListRoutes :many
 
-SELECT r.id, r.company_id, r.origin_agency_id, r.destination_agency_id, r.name, r.base_price, r.duration_minutes, r.distance_km, r.included_baggage_kg, r.is_active, r.created_at, r.updated_at, oa.name AS origin_agency_name, da.name AS destination_agency_name,
-       oc.name AS origin_city, dc.name AS destination_city
-FROM routes r
-JOIN agencies oa ON oa.id = r.origin_agency_id
-JOIN cities oc ON oc.id = oa.city_id
-JOIN agencies da ON da.id = r.destination_agency_id
-JOIN cities dc ON dc.id = da.city_id
-WHERE r.company_id = $1
-ORDER BY r.name
+SELECT id, company_id, origin_agency_id, destination_agency_id, name, base_price, duration_minutes, distance_km, included_baggage_kg, is_active, created_at, updated_at, pricing_mode FROM routes WHERE company_id = $1 ORDER BY name
 `
 
-type ListRoutesRow struct {
-	Route                 Route
-	OriginAgencyName      string
-	DestinationAgencyName string
-	OriginCity            string
-	DestinationCity       string
-}
-
 // ============================ Lignes ============================
-func (q *Queries) ListRoutes(ctx context.Context, companyID uuid.UUID) ([]ListRoutesRow, error) {
+// Extrémités et noms des arrêts : voir ListRouteStops.
+func (q *Queries) ListRoutes(ctx context.Context, companyID uuid.UUID) ([]Route, error) {
 	rows, err := q.db.Query(ctx, listRoutes, companyID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListRoutesRow{}
+	items := []Route{}
 	for rows.Next() {
-		var i ListRoutesRow
+		var i Route
 		if err := rows.Scan(
-			&i.Route.ID,
-			&i.Route.CompanyID,
-			&i.Route.OriginAgencyID,
-			&i.Route.DestinationAgencyID,
-			&i.Route.Name,
-			&i.Route.BasePrice,
-			&i.Route.DurationMinutes,
-			&i.Route.DistanceKm,
-			&i.Route.IncludedBaggageKg,
-			&i.Route.IsActive,
-			&i.Route.CreatedAt,
-			&i.Route.UpdatedAt,
-			&i.OriginAgencyName,
-			&i.DestinationAgencyName,
-			&i.OriginCity,
-			&i.DestinationCity,
+			&i.ID,
+			&i.CompanyID,
+			&i.OriginAgencyID,
+			&i.DestinationAgencyID,
+			&i.Name,
+			&i.BasePrice,
+			&i.DurationMinutes,
+			&i.DistanceKm,
+			&i.IncludedBaggageKg,
+			&i.IsActive,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.PricingMode,
 		); err != nil {
 			return nil, err
 		}
@@ -628,7 +612,7 @@ const updateRoute = `-- name: UpdateRoute :one
 UPDATE routes SET name = $1, base_price = $2, duration_minutes = $3,
                   distance_km = $4, included_baggage_kg = $5, is_active = $6
 WHERE id = $7 AND company_id = $8
-RETURNING id, company_id, origin_agency_id, destination_agency_id, name, base_price, duration_minutes, distance_km, included_baggage_kg, is_active, created_at, updated_at
+RETURNING id, company_id, origin_agency_id, destination_agency_id, name, base_price, duration_minutes, distance_km, included_baggage_kg, is_active, created_at, updated_at, pricing_mode
 `
 
 type UpdateRouteParams struct {
@@ -667,6 +651,7 @@ func (q *Queries) UpdateRoute(ctx context.Context, arg UpdateRouteParams) (Route
 		&i.IsActive,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.PricingMode,
 	)
 	return i, err
 }

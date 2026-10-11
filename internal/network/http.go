@@ -236,7 +236,7 @@ func (h *Handler) Register(api huma.API) {
 					return err
 				}
 				out.Body.Agency = toAgency(r.Agency, r.CityName, r.CitySlug, r.CompanyName)
-				dests, err := q.ListDestinationsFromAgency(ctx, r.Agency.ID)
+				dests, err := q.ListDestinationsFromAgency(ctx, &r.Agency.ID)
 				if err != nil {
 					return err
 				}
@@ -244,7 +244,7 @@ func (h *Handler) Register(api huma.API) {
 				for _, d := range dests {
 					out.Body.Destinations = append(out.Body.Destinations, City{Name: d.CityName, Slug: d.CitySlug})
 				}
-				deps, err := q.ListUpcomingDeparturesFromAgency(ctx, r.Agency.ID)
+				deps, err := q.ListUpcomingDeparturesFromAgency(ctx, &r.Agency.ID)
 				if err != nil {
 					return err
 				}
@@ -297,6 +297,7 @@ func emptyIfNil(s []string) []string {
 
 func (h *Handler) registerAdmin(api huma.API) {
 	admin := []string{auth.RoleCompanyAdmin}
+	h.registerStopPoints(api, admin)
 
 	huma.Register(api, apix.Op("get-company-settings", http.MethodGet, "/v1/admin/company", tagAdmin, "Paramètres de la compagnie", apix.Staff),
 		func(ctx context.Context, _ *struct{}) (*struct{ Body CompanySettings }, error) {
@@ -424,6 +425,10 @@ func (h *Handler) registerAdmin(api huma.API) {
 					Services: b.Services, Instructions: b.Instructions, Photos: emptyIfNil(b.Photos), IsActive: b.IsActive,
 				})
 				if err != nil {
+					return err
+				}
+				// Une agence est aussi un point d'arrêt où l'on monte.
+				if err := EnsureAgencyStopPoint(ctx, q, a); err != nil {
 					return err
 				}
 				out.Body = toAgency(a, city.Name, city.Slug, company.Name)
