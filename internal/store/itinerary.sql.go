@@ -27,6 +27,22 @@ func (q *Queries) BookingBoardingAt(ctx context.Context, id uuid.UUID) (time.Tim
 	return scheduled_at, err
 }
 
+const closeOpenStopVisits = `-- name: CloseOpenStopVisits :exec
+UPDATE departure_stop_visits SET departed_at = $1
+WHERE departure_id = $2 AND departed_at IS NULL AND arrived_at <= $1
+`
+
+type CloseOpenStopVisitsParams struct {
+	At          *time.Time
+	DepartureID uuid.UUID
+}
+
+// Arrêt précédent jamais fermé (oubli, perte de réseau) : clos à l'arrivée suivante.
+func (q *Queries) CloseOpenStopVisits(ctx context.Context, arg CloseOpenStopVisitsParams) error {
+	_, err := q.db.Exec(ctx, closeOpenStopVisits, arg.At, arg.DepartureID)
+	return err
+}
+
 const copyRouteStopsToDeparture = `-- name: CopyRouteStopsToDeparture :exec
 
 INSERT INTO departure_stops (departure_id, company_id, seq, stop_point_id, scheduled_at, pause_minutes, can_board, can_alight)
@@ -120,6 +136,56 @@ func (q *Queries) DeleteRouteStops(ctx context.Context, routeID uuid.UUID) error
 	return err
 }
 
+const departStopVisit = `-- name: DepartStopVisit :one
+UPDATE departure_stop_visits SET departed_at = GREATEST($1, arrived_at),
+                                 departure_lat = $2, departure_lng = $3,
+                                 departure_client_id = $4
+WHERE id = $5 AND departed_at IS NULL
+RETURNING id, company_id, departure_id, seq, reason, note, arrived_at, departed_at, arrival_lat, arrival_lng, arrival_accuracy, departure_lat, departure_lng, location_mocked, recorded_by, device_id, client_id, departure_client_id, created_at, updated_at
+`
+
+type DepartStopVisitParams struct {
+	DepartedAt        *time.Time
+	DepartureLat      *float64
+	DepartureLng      *float64
+	DepartureClientID *string
+	ID                uuid.UUID
+}
+
+func (q *Queries) DepartStopVisit(ctx context.Context, arg DepartStopVisitParams) (DepartureStopVisit, error) {
+	row := q.db.QueryRow(ctx, departStopVisit,
+		arg.DepartedAt,
+		arg.DepartureLat,
+		arg.DepartureLng,
+		arg.DepartureClientID,
+		arg.ID,
+	)
+	var i DepartureStopVisit
+	err := row.Scan(
+		&i.ID,
+		&i.CompanyID,
+		&i.DepartureID,
+		&i.Seq,
+		&i.Reason,
+		&i.Note,
+		&i.ArrivedAt,
+		&i.DepartedAt,
+		&i.ArrivalLat,
+		&i.ArrivalLng,
+		&i.ArrivalAccuracy,
+		&i.DepartureLat,
+		&i.DepartureLng,
+		&i.LocationMocked,
+		&i.RecordedBy,
+		&i.DeviceID,
+		&i.ClientID,
+		&i.DepartureClientID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const departureLastSeq = `-- name: DepartureLastSeq :one
 SELECT COALESCE(max(seq), 1)::int FROM departure_stops WHERE departure_id = $1
 `
@@ -177,6 +243,80 @@ func (q *Queries) GetStopPointByAgency(ctx context.Context, agencyID *uuid.UUID)
 		&i.Latitude,
 		&i.Longitude,
 		&i.IsActive,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getStopVisitByClientID = `-- name: GetStopVisitByClientID :one
+SELECT id, company_id, departure_id, seq, reason, note, arrived_at, departed_at, arrival_lat, arrival_lng, arrival_accuracy, departure_lat, departure_lng, location_mocked, recorded_by, device_id, client_id, departure_client_id, created_at, updated_at FROM departure_stop_visits WHERE device_id = $1 AND client_id = $2
+`
+
+type GetStopVisitByClientIDParams struct {
+	DeviceID *uuid.UUID
+	ClientID *string
+}
+
+func (q *Queries) GetStopVisitByClientID(ctx context.Context, arg GetStopVisitByClientIDParams) (DepartureStopVisit, error) {
+	row := q.db.QueryRow(ctx, getStopVisitByClientID, arg.DeviceID, arg.ClientID)
+	var i DepartureStopVisit
+	err := row.Scan(
+		&i.ID,
+		&i.CompanyID,
+		&i.DepartureID,
+		&i.Seq,
+		&i.Reason,
+		&i.Note,
+		&i.ArrivedAt,
+		&i.DepartedAt,
+		&i.ArrivalLat,
+		&i.ArrivalLng,
+		&i.ArrivalAccuracy,
+		&i.DepartureLat,
+		&i.DepartureLng,
+		&i.LocationMocked,
+		&i.RecordedBy,
+		&i.DeviceID,
+		&i.ClientID,
+		&i.DepartureClientID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getStopVisitByDepartureClientID = `-- name: GetStopVisitByDepartureClientID :one
+SELECT id, company_id, departure_id, seq, reason, note, arrived_at, departed_at, arrival_lat, arrival_lng, arrival_accuracy, departure_lat, departure_lng, location_mocked, recorded_by, device_id, client_id, departure_client_id, created_at, updated_at FROM departure_stop_visits WHERE device_id = $1 AND departure_client_id = $2
+`
+
+type GetStopVisitByDepartureClientIDParams struct {
+	DeviceID          *uuid.UUID
+	DepartureClientID *string
+}
+
+func (q *Queries) GetStopVisitByDepartureClientID(ctx context.Context, arg GetStopVisitByDepartureClientIDParams) (DepartureStopVisit, error) {
+	row := q.db.QueryRow(ctx, getStopVisitByDepartureClientID, arg.DeviceID, arg.DepartureClientID)
+	var i DepartureStopVisit
+	err := row.Scan(
+		&i.ID,
+		&i.CompanyID,
+		&i.DepartureID,
+		&i.Seq,
+		&i.Reason,
+		&i.Note,
+		&i.ArrivedAt,
+		&i.DepartedAt,
+		&i.ArrivalLat,
+		&i.ArrivalLng,
+		&i.ArrivalAccuracy,
+		&i.DepartureLat,
+		&i.DepartureLng,
+		&i.LocationMocked,
+		&i.RecordedBy,
+		&i.DeviceID,
+		&i.ClientID,
+		&i.DepartureClientID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -256,6 +396,72 @@ func (q *Queries) InsertRouteStop(ctx context.Context, arg InsertRouteStopParams
 		arg.CanAlight,
 	)
 	return err
+}
+
+const insertStopVisit = `-- name: InsertStopVisit :one
+INSERT INTO departure_stop_visits (company_id, departure_id, seq, reason, note, arrived_at, arrival_lat, arrival_lng,
+                                   arrival_accuracy, location_mocked, recorded_by, device_id, client_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
+        $9, $10, $11, $12, $13)
+RETURNING id, company_id, departure_id, seq, reason, note, arrived_at, departed_at, arrival_lat, arrival_lng, arrival_accuracy, departure_lat, departure_lng, location_mocked, recorded_by, device_id, client_id, departure_client_id, created_at, updated_at
+`
+
+type InsertStopVisitParams struct {
+	CompanyID       uuid.UUID
+	DepartureID     uuid.UUID
+	Seq             *int32
+	Reason          string
+	Note            string
+	ArrivedAt       time.Time
+	ArrivalLat      *float64
+	ArrivalLng      *float64
+	ArrivalAccuracy *float32
+	LocationMocked  bool
+	RecordedBy      uuid.UUID
+	DeviceID        *uuid.UUID
+	ClientID        *string
+}
+
+func (q *Queries) InsertStopVisit(ctx context.Context, arg InsertStopVisitParams) (DepartureStopVisit, error) {
+	row := q.db.QueryRow(ctx, insertStopVisit,
+		arg.CompanyID,
+		arg.DepartureID,
+		arg.Seq,
+		arg.Reason,
+		arg.Note,
+		arg.ArrivedAt,
+		arg.ArrivalLat,
+		arg.ArrivalLng,
+		arg.ArrivalAccuracy,
+		arg.LocationMocked,
+		arg.RecordedBy,
+		arg.DeviceID,
+		arg.ClientID,
+	)
+	var i DepartureStopVisit
+	err := row.Scan(
+		&i.ID,
+		&i.CompanyID,
+		&i.DepartureID,
+		&i.Seq,
+		&i.Reason,
+		&i.Note,
+		&i.ArrivedAt,
+		&i.DepartedAt,
+		&i.ArrivalLat,
+		&i.ArrivalLng,
+		&i.ArrivalAccuracy,
+		&i.DepartureLat,
+		&i.DepartureLng,
+		&i.LocationMocked,
+		&i.RecordedBy,
+		&i.DeviceID,
+		&i.ClientID,
+		&i.DepartureClientID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const isCrewMember = `-- name: IsCrewMember :one
@@ -584,6 +790,53 @@ func (q *Queries) ListStopPoints(ctx context.Context, companyID uuid.UUID) ([]Li
 			&i.UpdatedAt,
 			&i.CityName,
 			&i.AgencyName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listStopVisits = `-- name: ListStopVisits :many
+
+SELECT id, company_id, departure_id, seq, reason, note, arrived_at, departed_at, arrival_lat, arrival_lng, arrival_accuracy, departure_lat, departure_lng, location_mocked, recorded_by, device_id, client_id, departure_client_id, created_at, updated_at FROM departure_stop_visits WHERE departure_id = $1 ORDER BY arrived_at
+`
+
+// ============================ Journal des arrets ============================
+func (q *Queries) ListStopVisits(ctx context.Context, departureID uuid.UUID) ([]DepartureStopVisit, error) {
+	rows, err := q.db.Query(ctx, listStopVisits, departureID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DepartureStopVisit{}
+	for rows.Next() {
+		var i DepartureStopVisit
+		if err := rows.Scan(
+			&i.ID,
+			&i.CompanyID,
+			&i.DepartureID,
+			&i.Seq,
+			&i.Reason,
+			&i.Note,
+			&i.ArrivedAt,
+			&i.DepartedAt,
+			&i.ArrivalLat,
+			&i.ArrivalLng,
+			&i.ArrivalAccuracy,
+			&i.DepartureLat,
+			&i.DepartureLng,
+			&i.LocationMocked,
+			&i.RecordedBy,
+			&i.DeviceID,
+			&i.ClientID,
+			&i.DepartureClientID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}

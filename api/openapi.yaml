@@ -3147,6 +3147,10 @@ components:
         scanned_at:
           format: date-time
           type: string
+        stop_seq:
+          format: int32
+          minimum: 0
+          type: integer
       required:
         - client_scan_id
         - qr_payload
@@ -3321,20 +3325,40 @@ components:
           items:
             $ref: "#/components/schemas/ManifestEntry"
           type: array
+        stops:
+          description: "Arrêts du départ, dans l'ordre : en attente et descentes par arrêt"
+          items:
+            $ref: "#/components/schemas/DepartureStop"
+          type: array
+        visits:
+          description: Journal des arrêts déjà déclarés
+          items:
+            $ref: "#/components/schemas/StopVisit"
+          type: array
       required:
         - departure_id
         - expected
         - boarded
         - missing
         - passengers
+        - stops
+        - visits
         - generated_at
       type: object
     ManifestEntry:
       additionalProperties: false
       properties:
+        alighting_seq:
+          description: Arrêt de descente (indice dans stops)
+          format: int32
+          type: integer
         boarded_at:
           format: date-time
           type: string
+        boarding_seq:
+          description: Arrêt de montée (indice dans stops)
+          format: int32
+          type: integer
         booking_reference:
           type: string
         category_code:
@@ -3363,6 +3387,8 @@ components:
         - ticket_number
         - ticket_status
         - category_code
+        - boarding_seq
+        - alighting_seq
       type: object
     ManifestParcel:
       additionalProperties: false
@@ -4783,6 +4809,18 @@ components:
         - category
         - weight_kg
       type: object
+    Record-stop-eventsRequest:
+      additionalProperties: false
+      properties:
+        events:
+          items:
+            $ref: "#/components/schemas/StopEventInput"
+          maxItems: 200
+          minItems: 1
+          type: array
+      required:
+        - events
+      type: object
     RecurringResult:
       additionalProperties: false
       properties:
@@ -5480,15 +5518,30 @@ components:
           maxLength: 2000
           minLength: 10
           type: string
+        stop_seq:
+          description: "Arrêt où a lieu le contrôle : signale une montée hors de l'arrêt réservé"
+          format: int32
+          minimum: 0
+          type: integer
       required:
         - qr_payload
       type: object
     ScanResult:
       additionalProperties: false
       properties:
+        alighting_seq:
+          description: "Arrêt de descente : à afficher en gros"
+          format: int32
+          type: integer
         boarded_at:
           format: date-time
           type: string
+        boarding_mismatch:
+          type: boolean
+        boarding_seq:
+          description: Arrêt de montée réservé
+          format: int32
+          type: integer
         client_scan_id:
           type: string
         message:
@@ -6341,6 +6394,85 @@ components:
         - phone
         - role
       type: object
+    StopEventInput:
+      additionalProperties: false
+      properties:
+        accuracy:
+          format: float
+          minimum: 0
+          type: number
+        at:
+          description: Heure réelle de l'événement (plafonnée à l'heure du serveur)
+          format: date-time
+          type: string
+        client_id:
+          description: "Identifiant unique côté téléphone : renvoyer un événement est sans effet"
+          maxLength: 64
+          minLength: 1
+          type: string
+        latitude:
+          format: double
+          maximum: 90
+          minimum: -90
+          type: number
+        longitude:
+          format: double
+          maximum: 180
+          minimum: -180
+          type: number
+        mocked:
+          type: boolean
+        note:
+          maxLength: 500
+          type: string
+        reason:
+          enum:
+            - planned
+            - police
+            - breakdown
+            - puncture
+            - pause
+            - traffic
+            - other
+            - ""
+          type: string
+        seq:
+          description: "Arrivée à un arrêt prévu ; absent : arrêt imprévu (reason obligatoire)"
+          format: int32
+          minimum: 0
+          type: integer
+        type:
+          enum:
+            - arrival
+            - departure
+          type: string
+        visit_client_id:
+          description: "Départ : client_id de l'arrivée correspondante (absent : dernier arrêt ouvert)"
+          maxLength: 64
+          type: string
+      required:
+        - client_id
+        - type
+        - at
+      type: object
+    StopEventResult:
+      additionalProperties: false
+      properties:
+        client_id:
+          type: string
+        result:
+          description: "ignored : départ sans arrêt ouvert"
+          enum:
+            - recorded
+            - duplicate
+            - ignored
+          type: string
+        visit:
+          $ref: "#/components/schemas/StopVisit"
+      required:
+        - client_id
+        - result
+      type: object
     StopPoint:
       additionalProperties: false
       properties:
@@ -6413,6 +6545,53 @@ components:
         - name
         - address
         - is_active
+      type: object
+    StopVisit:
+      additionalProperties: false
+      properties:
+        accuracy:
+          description: Précision du GPS (mètres)
+          format: float
+          type: number
+        arrived_at:
+          format: date-time
+          type: string
+        client_id:
+          type: string
+        departed_at:
+          format: date-time
+          type: string
+        id:
+          type: string
+        latitude:
+          format: double
+          type: number
+        longitude:
+          format: double
+          type: number
+        mocked:
+          description: Position simulée signalée par le téléphone
+          type: boolean
+        note:
+          type: string
+        reason:
+          enum:
+            - planned
+            - police
+            - breakdown
+            - puncture
+            - pause
+            - traffic
+            - other
+          type: string
+        seq:
+          description: "Arrêt prévu (indice dans stops) ; absent : arrêt imprévu"
+          format: int32
+          type: integer
+      required:
+        - id
+        - reason
+        - arrived_at
       type: object
     Sync-offline-scansRequest:
       additionalProperties: false
@@ -12824,6 +13003,69 @@ paths:
         - bearerAuth: []
         - cookieAuth: []
       summary: Déclarer l'ouverture de l'embarquement, le départ ou l'arrivée
+      tags:
+        - Agent — Embarquement
+  /v1/agent/departures/{id}/stop-events:
+    post:
+      description: |-
+        Réservé au contrôleur du départ (et à l'administrateur), depuis un terminal enregistré. Les événements sont traités dans l'ordre chronologique ; `client_id` rend l'envoi idempotent (file hors connexion). Une arrivée clôt l'arrêt précédent resté ouvert. Effets : départ du premier arrêt → départ « parti » ; arrivée au dernier arrêt → « arrivé ».
+
+        Réservé au **personnel** — rôles : `company_admin`, `agency_manager`, `boarding_agent`, `driver`.
+      operationId: record-stop-events
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+        - in: header
+          name: X-Device-ID
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Record-stop-eventsRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: "#/components/schemas/StopEventResult"
+                type: array
+          description: OK
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unauthorized
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Forbidden
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unprocessable Entity
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Internal Server Error
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      summary: "Journal des arrêts : arrivée, départ, arrêt imprévu"
       tags:
         - Agent — Embarquement
   /v1/agent/departures/{id}/sync:

@@ -160,7 +160,7 @@ JOIN buses bu ON bu.id = d.bus_id
 WHERE t.id = $1;
 
 -- name: GetTicketForUpdate :one
-SELECT t.*, bs.seat_label, bs.passenger_name
+SELECT t.*, bs.seat_label, bs.passenger_name, bs.from_seq AS boarding_seq, bs.to_seq AS alighting_seq
 FROM tickets t
 JOIN booking_seats bs ON bs.id = t.booking_seat_id
 WHERE t.id = $1
@@ -172,14 +172,16 @@ UPDATE tickets SET status = 'used', boarded_at = $2, boarded_by = $3 WHERE id = 
 -- ============================ Embarquement ============================
 
 -- name: InsertBoardingScan :one
-INSERT INTO boarding_scans (company_id, departure_id, ticket_id, staff_id, device_id, result, offline, scanned_at, client_scan_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+INSERT INTO boarding_scans (company_id, departure_id, ticket_id, staff_id, device_id, result, offline, scanned_at, client_scan_id, stop_seq)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, sqlc.narg(stop_seq))
 ON CONFLICT (device_id, client_scan_id) WHERE client_scan_id IS NOT NULL DO NOTHING
 RETURNING id;
 
 -- name: GetDepartureManifest :many
+-- Passagers vendus, avec leur arrêt de montée et de descente (indices dans departure_stops).
 SELECT bs.seat_label, bs.passenger_name, bs.passenger_phone, b.reference AS booking_reference,
-       t.id AS ticket_id, t.ticket_number, t.status AS ticket_status, t.boarded_at, sc.code AS category_code
+       t.id AS ticket_id, t.ticket_number, t.status AS ticket_status, t.boarded_at, sc.code AS category_code,
+       bs.from_seq AS boarding_seq, bs.to_seq AS alighting_seq
 FROM booking_seats bs
 JOIN bookings b ON b.id = bs.booking_id
 JOIN tickets t ON t.booking_seat_id = bs.id

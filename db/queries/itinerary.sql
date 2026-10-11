@@ -138,3 +138,33 @@ SELECT COALESCE(max(seq), 1)::int FROM departure_stops WHERE departure_id = $1;
 SELECT ds.scheduled_at FROM bookings b
 JOIN departure_stops ds ON ds.departure_id = b.departure_id AND ds.seq = b.boarding_seq
 WHERE b.id = $1;
+
+-- ============================ Journal des arrets ============================
+
+-- name: ListStopVisits :many
+SELECT * FROM departure_stop_visits WHERE departure_id = $1 ORDER BY arrived_at;
+
+-- name: GetStopVisitByClientID :one
+SELECT * FROM departure_stop_visits WHERE device_id = @device_id AND client_id = @client_id;
+
+-- name: InsertStopVisit :one
+INSERT INTO departure_stop_visits (company_id, departure_id, seq, reason, note, arrived_at, arrival_lat, arrival_lng,
+                                   arrival_accuracy, location_mocked, recorded_by, device_id, client_id)
+VALUES (@company_id, @departure_id, sqlc.narg(seq), @reason, @note, @arrived_at, sqlc.narg(arrival_lat), sqlc.narg(arrival_lng),
+        sqlc.narg(arrival_accuracy), @location_mocked, @recorded_by, sqlc.narg(device_id), sqlc.narg(client_id))
+RETURNING *;
+
+-- name: CloseOpenStopVisits :exec
+-- Arrêt précédent jamais fermé (oubli, perte de réseau) : clos à l'arrivée suivante.
+UPDATE departure_stop_visits SET departed_at = @at
+WHERE departure_id = @departure_id AND departed_at IS NULL AND arrived_at <= @at;
+
+-- name: DepartStopVisit :one
+UPDATE departure_stop_visits SET departed_at = GREATEST(@departed_at, arrived_at),
+                                 departure_lat = sqlc.narg(departure_lat), departure_lng = sqlc.narg(departure_lng),
+                                 departure_client_id = sqlc.narg(departure_client_id)
+WHERE id = @id AND departed_at IS NULL
+RETURNING *;
+
+-- name: GetStopVisitByDepartureClientID :one
+SELECT * FROM departure_stop_visits WHERE device_id = @device_id AND departure_client_id = @departure_client_id;

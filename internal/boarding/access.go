@@ -2,6 +2,7 @@ package boarding
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -19,6 +20,10 @@ type access struct {
 	allowed bool
 	// phones : numéros des passagers visibles (contrôleur, encadrement ; pas le chauffeur).
 	phones bool
+	// controller : contrôleur du départ (journal des arrêts, vente à bord).
+	controller bool
+	// agency : chef d'agence limité aux passagers qui montent ou descendent à son agence.
+	agency *uuid.UUID
 }
 
 // crewWindow : un membre d'équipage n'accède à ses départs que de la veille au lendemain
@@ -34,23 +39,23 @@ func inCrewWindow(departureAt, now time.Time) bool {
 
 // departureAccess applique le périmètre de chaque rôle (voir docs/lignes-arrets-equipage.md) :
 //   - administrateur : tout ;
-//   - chef d'agence : départs qui partent de son agence ou y arrivent (toute la compagnie sans agence) ;
-//   - contrôleur, chauffeur : départs où ils sont affectés, de la veille au lendemain ;
-//     seul le contrôleur (agent du départ) voit les téléphones des passagers.
-func departureAccess(p auth.Principal, d store.Departure, origin, destination uuid.UUID, now time.Time) access {
+//   - chef d'agence : départs qui s'arrêtent à son agence (toute la compagnie sans agence) ;
+//   - contrôleur (agent du départ) : ses départs, de la veille au lendemain, téléphones compris ;
+//   - chauffeur et autres membres d'équipage : leurs départs, même fenêtre, sans téléphones.
+func departureAccess(p auth.Principal, d store.Departure, servedAgencies []uuid.UUID, crewMember bool, now time.Time) access {
 	switch p.Role {
 	case auth.RoleCompanyAdmin:
 		return access{allowed: true, phones: true}
 	case auth.RoleAgencyManager:
-		ok := p.AgencyID == nil || *p.AgencyID == origin || *p.AgencyID == destination
-		return access{allowed: ok, phones: ok}
+		ok := p.AgencyID == nil || slices.Contains(servedAgencies, *p.AgencyID)
+		return access{allowed: ok, phones: ok, agency: p.AgencyID}
 	case auth.RoleBoardingAgent, auth.RoleDriver:
 		isController := d.AgentID != nil && *d.AgentID == p.ID
 		isDriver := d.DriverID != nil && *d.DriverID == p.ID
-		if !(isController || isDriver) || !inCrewWindow(d.DepartureAt, now) {
+		if !(isController || isDriver || crewMember) || !inCrewWindow(d.DepartureAt, now) {
 			return access{}
 		}
-		return access{allowed: true, phones: isController}
+		return access{allowed: true, phones: isController, controller: isController}
 	}
 	return access{}
 }
@@ -65,18 +70,21 @@ func (h *Handler) loadDeparture(ctx context.Context, q *store.Queries, p auth.Pr
 	if err != nil {
 		return d, access{}, err
 	}
-	r, err := q.GetRoute(ctx, store.GetRouteParams{ID: d.RouteID, CompanyID: p.CompanyID})
-	if database.IsNotFound(err) {
-		return d, access{}, apix.NotFound("Départ")
-	}
+	stops, err := q.ListDepartureStops(ctx, d.ID)
 	if err != nil {
 		return d, access{}, err
 	}
-	destination := uuid.Nil // ligne qui finit hors agence
-	if r.DestinationAgencyID != nil {
-		destination = *r.DestinationAgencyID
+	served := make([]uuid.UUID, 0, len(stops))
+	for _, st := range stops {
+		if st.AgencyID != nil {
+			served = append(served, *st.AgencyID)
+		}
 	}
-	a := departureAccess(p, d, r.OriginAgencyID, destination, time.Now())
+	crew, err := q.IsCrewMember(ctx, store.IsCrewMemberParams{DepartureID: d.ID, StaffID: p.ID})
+	if err != nil {
+		return d, access{}, err
+	}
+	a := departureAccess(p, d, served, crew, time.Now())
 	if !a.allowed {
 		return d, a, apix.NotFound("Départ")
 	}

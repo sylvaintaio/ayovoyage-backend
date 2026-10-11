@@ -576,7 +576,8 @@ func (q *Queries) GetBookingTrip(ctx context.Context, id uuid.UUID) (GetBookingT
 
 const getDepartureManifest = `-- name: GetDepartureManifest :many
 SELECT bs.seat_label, bs.passenger_name, bs.passenger_phone, b.reference AS booking_reference,
-       t.id AS ticket_id, t.ticket_number, t.status AS ticket_status, t.boarded_at, sc.code AS category_code
+       t.id AS ticket_id, t.ticket_number, t.status AS ticket_status, t.boarded_at, sc.code AS category_code,
+       bs.from_seq AS boarding_seq, bs.to_seq AS alighting_seq
 FROM booking_seats bs
 JOIN bookings b ON b.id = bs.booking_id
 JOIN tickets t ON t.booking_seat_id = bs.id
@@ -595,8 +596,11 @@ type GetDepartureManifestRow struct {
 	TicketStatus     string
 	BoardedAt        *time.Time
 	CategoryCode     string
+	BoardingSeq      int32
+	AlightingSeq     int32
 }
 
+// Passagers vendus, avec leur arrêt de montée et de descente (indices dans departure_stops).
 func (q *Queries) GetDepartureManifest(ctx context.Context, departureID uuid.UUID) ([]GetDepartureManifestRow, error) {
 	rows, err := q.db.Query(ctx, getDepartureManifest, departureID)
 	if err != nil {
@@ -616,6 +620,8 @@ func (q *Queries) GetDepartureManifest(ctx context.Context, departureID uuid.UUI
 			&i.TicketStatus,
 			&i.BoardedAt,
 			&i.CategoryCode,
+			&i.BoardingSeq,
+			&i.AlightingSeq,
 		); err != nil {
 			return nil, err
 		}
@@ -744,7 +750,7 @@ func (q *Queries) GetTicketDetail(ctx context.Context, id uuid.UUID) (GetTicketD
 }
 
 const getTicketForUpdate = `-- name: GetTicketForUpdate :one
-SELECT t.id, t.company_id, t.booking_id, t.booking_seat_id, t.departure_id, t.ticket_number, t.qr_payload, t.status, t.boarded_at, t.boarded_by, t.issued_at, t.updated_at, bs.seat_label, bs.passenger_name
+SELECT t.id, t.company_id, t.booking_id, t.booking_seat_id, t.departure_id, t.ticket_number, t.qr_payload, t.status, t.boarded_at, t.boarded_by, t.issued_at, t.updated_at, bs.seat_label, bs.passenger_name, bs.from_seq AS boarding_seq, bs.to_seq AS alighting_seq
 FROM tickets t
 JOIN booking_seats bs ON bs.id = t.booking_seat_id
 WHERE t.id = $1
@@ -766,6 +772,8 @@ type GetTicketForUpdateRow struct {
 	UpdatedAt     time.Time
 	SeatLabel     string
 	PassengerName string
+	BoardingSeq   int32
+	AlightingSeq  int32
 }
 
 func (q *Queries) GetTicketForUpdate(ctx context.Context, id uuid.UUID) (GetTicketForUpdateRow, error) {
@@ -786,14 +794,16 @@ func (q *Queries) GetTicketForUpdate(ctx context.Context, id uuid.UUID) (GetTick
 		&i.UpdatedAt,
 		&i.SeatLabel,
 		&i.PassengerName,
+		&i.BoardingSeq,
+		&i.AlightingSeq,
 	)
 	return i, err
 }
 
 const insertBoardingScan = `-- name: InsertBoardingScan :one
 
-INSERT INTO boarding_scans (company_id, departure_id, ticket_id, staff_id, device_id, result, offline, scanned_at, client_scan_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+INSERT INTO boarding_scans (company_id, departure_id, ticket_id, staff_id, device_id, result, offline, scanned_at, client_scan_id, stop_seq)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 ON CONFLICT (device_id, client_scan_id) WHERE client_scan_id IS NOT NULL DO NOTHING
 RETURNING id
 `
@@ -808,6 +818,7 @@ type InsertBoardingScanParams struct {
 	Offline      bool
 	ScannedAt    time.Time
 	ClientScanID *string
+	StopSeq      *int32
 }
 
 // ============================ Embarquement ============================
@@ -822,6 +833,7 @@ func (q *Queries) InsertBoardingScan(ctx context.Context, arg InsertBoardingScan
 		arg.Offline,
 		arg.ScannedAt,
 		arg.ClientScanID,
+		arg.StopSeq,
 	)
 	var id int64
 	err := row.Scan(&id)

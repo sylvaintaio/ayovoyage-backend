@@ -44,15 +44,19 @@ type ManifestEntry struct {
 	TicketStatus     string     `json:"ticket_status" enum:"valid,used,cancelled"`
 	BoardedAt        *time.Time `json:"boarded_at,omitempty"`
 	CategoryCode     string     `json:"category_code"`
+	BoardingSeq      int32      `json:"boarding_seq" doc:"Arrêt de montée (indice dans stops)"`
+	AlightingSeq     int32      `json:"alighting_seq" doc:"Arrêt de descente (indice dans stops)"`
 }
 
 type Manifest struct {
-	DepartureID uuid.UUID       `json:"departure_id"`
-	Expected    int             `json:"expected"`
-	Boarded     int             `json:"boarded"`
-	Missing     int             `json:"missing"`
-	Passengers  []ManifestEntry `json:"passengers"`
-	GeneratedAt time.Time       `json:"generated_at"`
+	DepartureID uuid.UUID                 `json:"departure_id"`
+	Expected    int                       `json:"expected"`
+	Boarded     int                       `json:"boarded"`
+	Missing     int                       `json:"missing"`
+	Passengers  []ManifestEntry           `json:"passengers"`
+	Stops       []departure.DepartureStop `json:"stops" doc:"Arrêts du départ, dans l'ordre : en attente et descentes par arrêt"`
+	Visits      []StopVisit               `json:"visits" doc:"Journal des arrêts déjà déclarés"`
+	GeneratedAt time.Time                 `json:"generated_at"`
 }
 
 // AgentDevice : terminal enregistré par un responsable et rattaché à l'agent.
@@ -70,6 +74,10 @@ type ScanResult struct {
 	PassengerName string     `json:"passenger_name,omitempty"`
 	BoardedAt     *time.Time `json:"boarded_at,omitempty"`
 	ClientScanID  string     `json:"client_scan_id,omitempty"`
+	BoardingSeq   *int32     `json:"boarding_seq,omitempty" doc:"Arrêt de montée réservé"`
+	AlightingSeq  *int32     `json:"alighting_seq,omitempty" doc:"Arrêt de descente : à afficher en gros"`
+	// Le voyageur monte à un autre arrêt que celui réservé : accepté, mais signalé au contrôleur.
+	BoardingMismatch bool `json:"boarding_mismatch,omitempty"`
 }
 
 var messages = map[string]string{
@@ -89,6 +97,7 @@ type scanInput struct {
 	ScannedAt    time.Time
 	Offline      bool
 	ClientScanID string
+	StopSeq      *int32 // arrêt où le contrôle a lieu (facultatif)
 }
 
 // scan valide un billet pour un départ. Règle hors ligne : le premier scan gagne.
@@ -99,6 +108,7 @@ func (h *Handler) scan(ctx context.Context, tx pgx.Tx, q *store.Queries, p auth.
 		_, err := q.InsertBoardingScan(ctx, store.InsertBoardingScanParams{
 			CompanyID: p.CompanyID, DepartureID: departureID, TicketID: ticketID, StaffID: p.ID, DeviceID: deviceID,
 			Result: result, Offline: in.Offline, ScannedAt: in.ScannedAt, ClientScanID: apix.NilIfEmpty(in.ClientScanID),
+			StopSeq: in.StopSeq,
 		})
 		if database.IsNotFound(err) { // scan déjà synchronisé (idempotence)
 			err = nil
@@ -133,6 +143,8 @@ func (h *Handler) scan(ctx context.Context, tx pgx.Tx, q *store.Queries, p auth.
 		return res, err
 	}
 	res.TicketID, res.SeatLabel, res.PassengerName, res.BoardedAt = &t.ID, t.SeatLabel, t.PassengerName, t.BoardedAt
+	res.BoardingSeq, res.AlightingSeq = &t.BoardingSeq, &t.AlightingSeq
+	res.BoardingMismatch = in.StopSeq != nil && *in.StopSeq != t.BoardingSeq
 	if t.DepartureID != departureID {
 		return record("wrong_departure", &t.ID)
 	}
@@ -179,6 +191,7 @@ func (h *Handler) device(ctx context.Context, q *store.Queries, p auth.Principal
 // ---------------------------------------------------------------- Routes
 
 func (h *Handler) Register(api huma.API) {
+	h.registerStopJournal(api)
 	huma.Register(api, apix.Op("list-agent-departures", http.MethodGet, "/v1/agent/departures", tagAgent,
 		"Départs du jour (affectés à moi ou à mon agence)", apix.Staff, fieldRoles...),
 		func(ctx context.Context, in *struct {
@@ -225,11 +238,27 @@ func (h *Handler) Register(api huma.API) {
 				if err != nil {
 					return err
 				}
+				if out.Body.Stops, err = departure.LoadStops(ctx, q, in.ID); err != nil {
+					return err
+				}
+				if out.Body.Visits, err = loadVisits(ctx, q, in.ID); err != nil {
+					return err
+				}
+				// Chef d'agence : seulement les voyageurs qui montent ou descendent à son agence.
+				atAgency := map[int32]bool{}
+				if acc.agency != nil {
+					for _, st := range out.Body.Stops {
+						atAgency[int32(st.Seq)] = st.AgencyID != nil && *st.AgencyID == *acc.agency
+					}
+				}
 				rows, err := q.GetDepartureManifest(ctx, in.ID)
 				for _, r := range rows {
 					e := ManifestEntry(r)
+					if acc.agency != nil && !atAgency[e.BoardingSeq] && !atAgency[e.AlightingSeq] {
+						continue
+					}
 					if !acc.phones {
-						e.PassengerPhone = "" // chauffeur : pas de coordonnées des voyageurs
+						e.PassengerPhone = "" // chauffeur, équipage : pas de coordonnées des voyageurs
 					}
 					out.Body.Passengers = append(out.Body.Passengers, e)
 					if r.TicketStatus != "cancelled" {
@@ -286,6 +315,7 @@ func (h *Handler) Register(api huma.API) {
 			DeviceID string    `header:"X-Device-ID" required:"true" doc:"Identifiant du terminal enregistré"`
 			Body     struct {
 				QRPayload string `json:"qr_payload" minLength:"10" maxLength:"2000"`
+				StopSeq   *int32 `json:"stop_seq,omitempty" minimum:"0" doc:"Arrêt où a lieu le contrôle : signale une montée hors de l'arrêt réservé"`
 			}
 		}) (*struct{ Body ScanResult }, error) {
 			p := auth.MustFromContext(ctx)
@@ -298,7 +328,7 @@ func (h *Handler) Register(api huma.API) {
 				if _, _, err := h.loadDeparture(ctx, q, p, in.ID, true); err != nil {
 					return err
 				}
-				out.Body, err = h.scan(ctx, tx, q, p, in.ID, dev, scanInput{QRPayload: in.Body.QRPayload, ScannedAt: time.Now()})
+				out.Body, err = h.scan(ctx, tx, q, p, in.ID, dev, scanInput{QRPayload: in.Body.QRPayload, ScannedAt: time.Now(), StopSeq: in.Body.StopSeq})
 				return err
 			})
 			return out, apix.Err(err)
@@ -316,6 +346,7 @@ func (h *Handler) Register(api huma.API) {
 					ClientScanID string    `json:"client_scan_id" minLength:"1" maxLength:"64"`
 					QRPayload    string    `json:"qr_payload" minLength:"10" maxLength:"2000"`
 					ScannedAt    time.Time `json:"scanned_at"`
+					StopSeq      *int32    `json:"stop_seq,omitempty" minimum:"0"`
 				} `json:"scans" minItems:"1" maxItems:"500"`
 			}
 		}) (*struct{ Body []ScanResult }, error) {
@@ -337,7 +368,7 @@ func (h *Handler) Register(api huma.API) {
 					if at.After(now) { // horloge du terminal en avance
 						at = now
 					}
-					r, err := h.scan(ctx, tx, q, p, in.ID, dev, scanInput{QRPayload: s.QRPayload, ScannedAt: at, Offline: true, ClientScanID: s.ClientScanID})
+					r, err := h.scan(ctx, tx, q, p, in.ID, dev, scanInput{QRPayload: s.QRPayload, ScannedAt: at, Offline: true, ClientScanID: s.ClientScanID, StopSeq: s.StopSeq})
 					if err != nil {
 						return err
 					}

@@ -219,13 +219,16 @@ CREATE TABLE departure_stop_visits (
     location_mocked   boolean NOT NULL DEFAULT false,  -- position simulée signalée par le téléphone
     recorded_by       uuid NOT NULL REFERENCES staff_users(id),
     device_id         uuid REFERENCES devices(id),
-    client_id         text,                            -- identifiant côté téléphone : envoi idempotent
+    client_id         text,                            -- identifiant côté téléphone de l'arrivée : envoi idempotent
+    departure_client_id text,                          -- identifiant côté téléphone du départ de l'arrêt
     created_at        timestamptz NOT NULL DEFAULT now(),
     updated_at        timestamptz NOT NULL DEFAULT now(),
     CHECK (departed_at IS NULL OR departed_at >= arrived_at),
     CHECK ((seq IS NULL) = (reason <> 'planned'))
 );
 CREATE UNIQUE INDEX departure_stop_visits_client_uq ON departure_stop_visits (device_id, client_id) WHERE client_id IS NOT NULL;
+CREATE UNIQUE INDEX departure_stop_visits_departure_client_uq ON departure_stop_visits (device_id, departure_client_id)
+    WHERE departure_client_id IS NOT NULL;
 CREATE INDEX departure_stop_visits_departure_idx ON departure_stop_visits (departure_id, arrived_at);
 CREATE TRIGGER departure_stop_visits_updated_at BEFORE UPDATE ON departure_stop_visits FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 ALTER TABLE departure_stop_visits ENABLE ROW LEVEL SECURITY;

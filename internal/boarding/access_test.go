@@ -26,29 +26,32 @@ func TestDepartureAccess(t *testing.T) {
 		d      store.Departure
 		want   bool
 		phones bool
+		crew   bool
 	}{
-		{"administrateur : tout", auth.Principal{ID: stranger, Role: auth.RoleCompanyAdmin}, today, true, true},
-		{"contrôleur affecté", auth.Principal{ID: controller, Role: auth.RoleBoardingAgent}, today, true, true},
-		{"chauffeur affecté : sans téléphones", auth.Principal{ID: driver, Role: auth.RoleDriver}, today, true, false},
-		{"contrôleur non affecté : refusé", auth.Principal{ID: stranger, Role: auth.RoleBoardingAgent}, today, false, false},
-		{"chauffeur non affecté : refusé", auth.Principal{ID: stranger, Role: auth.RoleDriver}, today, false, false},
+		{"administrateur : tout", auth.Principal{ID: stranger, Role: auth.RoleCompanyAdmin}, today, true, true, false},
+		{"contrôleur affecté", auth.Principal{ID: controller, Role: auth.RoleBoardingAgent}, today, true, true, false},
+		{"chauffeur affecté : sans téléphones", auth.Principal{ID: driver, Role: auth.RoleDriver}, today, true, false, false},
+		{"contrôleur non affecté : refusé", auth.Principal{ID: stranger, Role: auth.RoleBoardingAgent}, today, false, false, false},
+		{"chauffeur non affecté : refusé", auth.Principal{ID: stranger, Role: auth.RoleDriver}, today, false, false, false},
 		{"contrôleur, départ de la veille au soir", auth.Principal{ID: controller, Role: auth.RoleBoardingAgent},
-			dep(time.Date(2026, 10, 10, 22, 0, 0, 0, departure.LocalTZ)), true, true},
+			dep(time.Date(2026, 10, 10, 22, 0, 0, 0, departure.LocalTZ)), true, true, false},
 		{"contrôleur, départ du lendemain", auth.Principal{ID: controller, Role: auth.RoleBoardingAgent},
-			dep(time.Date(2026, 10, 12, 6, 0, 0, 0, departure.LocalTZ)), true, true},
+			dep(time.Date(2026, 10, 12, 6, 0, 0, 0, departure.LocalTZ)), true, true, false},
 		{"contrôleur, départ d'il y a 3 jours : refusé", auth.Principal{ID: controller, Role: auth.RoleBoardingAgent},
-			dep(now.AddDate(0, 0, -3)), false, false},
+			dep(now.AddDate(0, 0, -3)), false, false, false},
 		{"contrôleur, départ dans 2 jours : refusé", auth.Principal{ID: controller, Role: auth.RoleBoardingAgent},
-			dep(now.AddDate(0, 0, 2)), false, false},
-		{"chef de l'agence de départ", auth.Principal{ID: stranger, Role: auth.RoleAgencyManager, AgencyID: &origin}, today, true, true},
-		{"chef de l'agence d'arrivée", auth.Principal{ID: stranger, Role: auth.RoleAgencyManager, AgencyID: &destination}, today, true, true},
-		{"chef d'une autre agence : refusé", auth.Principal{ID: stranger, Role: auth.RoleAgencyManager, AgencyID: &otherAgency}, today, false, false},
-		{"caissier : refusé", auth.Principal{ID: stranger, Role: auth.RoleCashier}, today, false, false},
-		{"comptable : refusé", auth.Principal{ID: stranger, Role: auth.RoleFinance}, today, false, false},
+			dep(now.AddDate(0, 0, 2)), false, false, false},
+		{"chef de l'agence de départ", auth.Principal{ID: stranger, Role: auth.RoleAgencyManager, AgencyID: &origin}, today, true, true, false},
+		{"chef de l'agence d'arrivée", auth.Principal{ID: stranger, Role: auth.RoleAgencyManager, AgencyID: &destination}, today, true, true, false},
+		{"chef d'une autre agence : refusé", auth.Principal{ID: stranger, Role: auth.RoleAgencyManager, AgencyID: &otherAgency}, today, false, false, false},
+		{"caissier : refusé", auth.Principal{ID: stranger, Role: auth.RoleCashier}, today, false, false, false},
+		{"comptable : refusé", auth.Principal{ID: stranger, Role: auth.RoleFinance}, today, false, false, false},
+		{"autre membre d'équipage : sans téléphones", auth.Principal{ID: stranger, Role: auth.RoleDriver}, today, true, false, true},
+		{"chef d'une agence où le car s'arrête en route", auth.Principal{ID: stranger, Role: auth.RoleAgencyManager, AgencyID: &destination}, today, true, true, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := departureAccess(c.p, c.d, origin, destination, now)
+			got := departureAccess(c.p, c.d, []uuid.UUID{origin, destination}, c.crew, now)
 			if got.allowed != c.want || got.phones != c.phones {
 				t.Fatalf("accès = %+v, attendu allowed=%v phones=%v", got, c.want, c.phones)
 			}

@@ -312,25 +312,26 @@ type DepartureStop struct {
 }
 
 type DepartureStopVisit struct {
-	ID              uuid.UUID
-	CompanyID       uuid.UUID
-	DepartureID     uuid.UUID
-	Seq             *int32
-	Reason          string
-	Note            string
-	ArrivedAt       time.Time
-	DepartedAt      *time.Time
-	ArrivalLat      *float64
-	ArrivalLng      *float64
-	ArrivalAccuracy *float32
-	DepartureLat    *float64
-	DepartureLng    *float64
-	LocationMocked  bool
-	RecordedBy      uuid.UUID
-	DeviceID        *uuid.UUID
-	ClientID        *string
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	ID                uuid.UUID
+	CompanyID         uuid.UUID
+	DepartureID       uuid.UUID
+	Seq               *int32
+	Reason            string
+	Note              string
+	ArrivedAt         time.Time
+	DepartedAt        *time.Time
+	ArrivalLat        *float64
+	ArrivalLng        *float64
+	ArrivalAccuracy   *float32
+	DepartureLat      *float64
+	DepartureLng      *float64
+	LocationMocked    bool
+	RecordedBy        uuid.UUID
+	DeviceID          *uuid.UUID
+	ClientID          *string
+	DepartureClientID *string
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 type Device struct {
