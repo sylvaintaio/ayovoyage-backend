@@ -24,6 +24,7 @@ L'API est **un seul fichier exécutable** : ni Go, ni Node, ni Docker sur le ser
 | `nginx-api.conf` | serveur | Site Nginx de l'API |
 | `backup.sh`, `busvoyage-backup.cron` | serveur | Sauvegarde de la base chaque nuit (14 jours) |
 | `import-data.sh` | serveur | Facultatif : charger un export de la base locale |
+| `sync-local-data.sh` | ordinateur | Recette : copier la base locale sur le serveur (export, envoi, import, clé des billets) |
 
 ---
 
@@ -96,7 +97,13 @@ Le mot de passe est généré et affiché **une seule fois** : notez-le, connect
 ssh -t utilisateur@IP "sudo -u busvoyage bash -c 'set -a; . /etc/busvoyage/api.env; set +a; /opt/busvoyage/bin/api seed'"
 ```
 
-**Reprendre la base de votre ordinateur** (comptes, réservations de test…) :
+**Reprendre la base de votre ordinateur** (recette), en une commande depuis `backend/` :
+```bash
+VPS=utilisateur@IP ./deploy/sync-local-data.sh
+```
+Elle exporte la base Docker, remplace les données du serveur (sauvegarde faite avant), reprend la clé des billets de `backend/.env` pour que les QR codes déjà émis restent valides, réinitialise la double authentification du personnel et ferme les sessions. Refusée si `APP_ENV=production`. **Avant l'ouverture réelle**, changez de clé des billets (`api ticket-key`, voir `docs/operations.md`) et les mots de passe des comptes de démonstration.
+
+Ou, à la main :
 ```bash
 docker exec busvoyage-postgres-1 pg_dump -U postgres -d busvoyage --no-owner --no-privileges > busvoyage.sql
 scp busvoyage.sql deploy/import-data.sh utilisateur@IP:~

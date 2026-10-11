@@ -55,6 +55,13 @@ type Manifest struct {
 	GeneratedAt time.Time       `json:"generated_at"`
 }
 
+// AgentDevice : terminal enregistré par un responsable et rattaché à l'agent.
+type AgentDevice struct {
+	ID       uuid.UUID `json:"id"`
+	Name     string    `json:"name"`
+	Platform string    `json:"platform"`
+}
+
 type ScanResult struct {
 	Result        string     `json:"result" enum:"boarded,already_used,invalid_signature,wrong_departure,cancelled,not_found,conflict"`
 	Message       string     `json:"message"`
@@ -272,11 +279,11 @@ func (h *Handler) Register(api huma.API) {
 
 	huma.Register(api, apix.WithDescription(apix.Op("scan-ticket", http.MethodPost, "/v1/agent/departures/{id}/scan", tagAgent,
 		"Scanner un billet (en ligne)", apix.Staff, fieldRoles...),
-		"Vérifie la signature du QR, le départ, le statut, puis passe le billet à « embarqué ». "+
+		"Vérifie le terminal, la signature du QR, le départ, le statut, puis passe le billet à « embarqué ». "+
 			"Un billet déjà utilisé est signalé avec l'heure du premier passage. Chaque scan est journalisé."),
 		func(ctx context.Context, in *struct {
 			ID       uuid.UUID `path:"id"`
-			DeviceID string    `header:"X-Device-ID" doc:"Identifiant du terminal enregistré"`
+			DeviceID string    `header:"X-Device-ID" required:"true" doc:"Identifiant du terminal enregistré"`
 			Body     struct {
 				QRPayload string `json:"qr_payload" minLength:"10" maxLength:"2000"`
 			}
@@ -337,6 +344,26 @@ func (h *Handler) Register(api huma.API) {
 					out.Body = append(out.Body, r)
 				}
 				return nil
+			})
+			return out, apix.Err(err)
+		})
+
+	huma.Register(api, apix.WithDescription(apix.Op("get-my-device", http.MethodGet, "/v1/agent/device", tagAgent,
+		"Vérifier le terminal de ce téléphone", apix.Staff, fieldRoles...),
+		"À l'activation de l'application Agent : le terminal doit exister, appartenir à l'agent connecté et être actif (sinon 403)."),
+		func(ctx context.Context, in *struct {
+			DeviceID string `header:"X-Device-ID" required:"true"`
+		}) (*struct{ Body AgentDevice }, error) {
+			p := auth.MustFromContext(ctx)
+			out := &struct{ Body AgentDevice }{}
+			err := h.DB.Tx(ctx, p.Tenant(), func(_ pgx.Tx, q *store.Queries) error {
+				id, err := h.device(ctx, q, p, in.DeviceID)
+				if err != nil {
+					return err
+				}
+				d, err := q.GetDevice(ctx, *id)
+				out.Body = AgentDevice{ID: d.ID, Name: d.Name, Platform: d.Platform}
+				return err
 			})
 			return out, apix.Err(err)
 		})

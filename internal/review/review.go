@@ -134,8 +134,8 @@ type ReviewStats struct {
 }
 
 type ReviewList struct {
-	ReviewStats   ReviewStats    `json:"stats" doc:"30 derniers jours"`
-	Reviews []Review `json:"reviews"`
+	ReviewStats ReviewStats `json:"stats" doc:"30 derniers jours"`
+	Reviews     []Review    `json:"reviews"`
 }
 
 func firstName(full string) string {

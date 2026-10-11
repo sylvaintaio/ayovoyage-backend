@@ -435,6 +435,20 @@ components:
       required:
         - status
       type: object
+    AgentDevice:
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        platform:
+          type: string
+      required:
+        - id
+        - name
+        - platform
+      type: object
     Assign-parcelRequest:
       additionalProperties: false
       properties:
@@ -12212,7 +12226,7 @@ paths:
   /v1/agent/departures/{id}/scan:
     post:
       description: |-
-        Vérifie la signature du QR, le départ, le statut, puis passe le billet à « embarqué ». Un billet déjà utilisé est signalé avec l'heure du premier passage. Chaque scan est journalisé.
+        Vérifie le terminal, la signature du QR, le départ, le statut, puis passe le billet à « embarqué ». Un billet déjà utilisé est signalé avec l'heure du premier passage. Chaque scan est journalisé.
 
         Réservé au **personnel** — rôles : `company_admin`, `agency_manager`, `boarding_agent`, `driver`.
       operationId: scan-ticket
@@ -12225,6 +12239,7 @@ paths:
         - description: Identifiant du terminal enregistré
           in: header
           name: X-Device-ID
+          required: true
           schema:
             description: Identifiant du terminal enregistré
             type: string
@@ -12385,6 +12400,56 @@ paths:
         - bearerAuth: []
         - cookieAuth: []
       summary: Synchroniser les scans effectués hors connexion
+      tags:
+        - Agent — Embarquement
+  /v1/agent/device:
+    get:
+      description: |-
+        À l'activation de l'application Agent : le terminal doit exister, appartenir à l'agent connecté et être actif (sinon 403).
+
+        Réservé au **personnel** — rôles : `company_admin`, `agency_manager`, `boarding_agent`, `driver`.
+      operationId: get-my-device
+      parameters:
+        - in: header
+          name: X-Device-ID
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentDevice"
+          description: OK
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unauthorized
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Forbidden
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unprocessable Entity
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Internal Server Error
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      summary: Vérifier le terminal de ce téléphone
       tags:
         - Agent — Embarquement
   /v1/agent/ticket-keys:
