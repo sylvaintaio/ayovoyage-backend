@@ -169,8 +169,9 @@ type AdminDeparture struct {
 	BoardedSeats int32      `json:"boarded_seats"`
 	PeakSeats    int32      `json:"peak_seats" doc:"Charge maximale sur un tronçon : places libres = seat_count - peak_seats (sold_seats compte les passagers, revente comprise)"`
 	// Fiche du départ uniquement :
-	Stops []DepartureStop `json:"stops,omitempty" doc:"Arrêts et heures prévues"`
-	Crew  []CrewMember    `json:"crew,omitempty" doc:"Contrôleur, chauffeur et autres membres"`
+	Stops  []DepartureStop `json:"stops,omitempty" doc:"Arrêts et heures prévues"`
+	Crew   []CrewMember    `json:"crew,omitempty" doc:"Contrôleur, chauffeur et autres membres"`
+	Visits []StopVisitView `json:"visits,omitempty" doc:"Journal des arrêts (heures réelles, arrêts imprévus)"`
 }
 
 // ---------------------------------------------------------------- Plan de sièges
@@ -641,20 +642,28 @@ func (h *Handler) registerAdmin(api huma.API) {
 	huma.Register(api, apix.Op("get-departure", http.MethodGet, "/v1/admin/departures/{id}", tagAdmin,
 		"Détail d'un départ (plan nominatif)", apix.Staff),
 		func(ctx context.Context, in *struct {
-			ID uuid.UUID `path:"id"`
+			ID        uuid.UUID `path:"id"`
+			Boarding  int       `query:"boarding" default:"-1" doc:"Plan et prix sur ce tronçon (guichet) ; absent : tout le trajet"`
+			Alighting int       `query:"alighting" default:"-1"`
 		}) (*struct {
 			Body struct {
-				Departure  AdminDeparture  `json:"departure"`
-				Categories []CategoryPrice `json:"categories"`
-				SeatMap    SeatMap         `json:"seat_map"`
+				Departure    AdminDeparture  `json:"departure"`
+				Categories   []CategoryPrice `json:"categories"`
+				SeatMap      SeatMap         `json:"seat_map"`
+				BoardingSeq  int             `json:"boarding_seq" doc:"Tronçon du plan"`
+				AlightingSeq int             `json:"alighting_seq"`
+				UnitPrice    int64           `json:"unit_price" doc:"Prix de base du tronçon (avant catégorie de siège)"`
 			}
 		}, error) {
 			p := auth.MustFromContext(ctx)
 			out := &struct {
 				Body struct {
-					Departure  AdminDeparture  `json:"departure"`
-					Categories []CategoryPrice `json:"categories"`
-					SeatMap    SeatMap         `json:"seat_map"`
+					Departure    AdminDeparture  `json:"departure"`
+					Categories   []CategoryPrice `json:"categories"`
+					SeatMap      SeatMap         `json:"seat_map"`
+					BoardingSeq  int             `json:"boarding_seq" doc:"Tronçon du plan"`
+					AlightingSeq int             `json:"alighting_seq"`
+					UnitPrice    int64           `json:"unit_price" doc:"Prix de base du tronçon (avant catégorie de siège)"`
 				}
 			}{}
 			err := h.DB.Tx(ctx, p.Tenant(), func(_ pgx.Tx, q *store.Queries) error {
@@ -681,9 +690,17 @@ func (h *Handler) registerAdmin(api huma.API) {
 				if out.Body.Departure.Crew, err = LoadCrew(ctx, q, d); err != nil {
 					return err
 				}
-				// Fiche du personnel : tout le trajet (un siège occupé sur au moins un tronçon apparaît pris).
-				last := max(len(out.Body.Departure.Stops)-1, 1)
-				out.Body.SeatMap, out.Body.Categories, err = LoadSeatMap(ctx, q, p.CompanyID, d.ID, d.LayoutID, d.BasePrice, 0, last, true)
+				if out.Body.Departure.Visits, err = LoadVisits(ctx, q, d.ID); err != nil {
+					return err
+				}
+				// Sans tronçon : tout le trajet (un siège occupé sur au moins un tronçon apparaît pris).
+				trip, err := segment.Plan(ctx, q, d, optSeq(in.Boarding), optSeq(in.Alighting), nil)
+				if err != nil {
+					return err
+				}
+				out.Body.BoardingSeq, out.Body.AlightingSeq, out.Body.UnitPrice = trip.Boarding, trip.Alighting, trip.UnitPrice
+				out.Body.SeatMap, out.Body.Categories, err = LoadSeatMap(ctx, q, p.CompanyID, d.ID, d.LayoutID, trip.UnitPrice,
+					trip.Boarding, trip.Alighting, true)
 				return err
 			})
 			return out, apix.Err(err)

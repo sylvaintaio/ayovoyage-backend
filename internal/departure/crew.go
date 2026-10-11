@@ -131,3 +131,31 @@ func saveCrew(ctx context.Context, q *store.Queries, companyID, departureID uuid
 	}
 	return nil
 }
+
+// StopVisitView : arrêt réellement effectué (journal du contrôleur).
+type StopVisitView struct {
+	ID         uuid.UUID  `json:"id"`
+	Seq        *int32     `json:"seq,omitempty" doc:"Arrêt prévu ; absent : arrêt imprévu"`
+	Reason     string     `json:"reason" enum:"planned,police,breakdown,puncture,pause,traffic,other"`
+	Note       string     `json:"note,omitempty"`
+	ArrivedAt  time.Time  `json:"arrived_at"`
+	DepartedAt *time.Time `json:"departed_at,omitempty"`
+	Latitude   *float64   `json:"latitude,omitempty"`
+	Longitude  *float64   `json:"longitude,omitempty"`
+	Accuracy   *float32   `json:"accuracy,omitempty"`
+	Mocked     bool       `json:"mocked,omitempty" doc:"Position simulée signalée par le téléphone"`
+}
+
+// LoadVisits : journal des arrêts d'un départ.
+func LoadVisits(ctx context.Context, q *store.Queries, departureID uuid.UUID) ([]StopVisitView, error) {
+	rows, err := q.ListStopVisits(ctx, departureID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]StopVisitView, 0, len(rows))
+	for _, v := range rows {
+		out = append(out, StopVisitView{ID: v.ID, Seq: v.Seq, Reason: v.Reason, Note: v.Note, ArrivedAt: v.ArrivedAt,
+			DepartedAt: v.DepartedAt, Latitude: v.ArrivalLat, Longitude: v.ArrivalLng, Accuracy: v.ArrivalAccuracy, Mocked: v.LocationMocked})
+	}
+	return out, nil
+}

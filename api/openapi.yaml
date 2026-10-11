@@ -173,6 +173,11 @@ components:
           items:
             $ref: "#/components/schemas/DepartureStop"
           type: array
+        visits:
+          description: Journal des arrêts (heures réelles, arrêts imprévus)
+          items:
+            $ref: "#/components/schemas/StopVisitView"
+          type: array
       required:
         - id
         - route_id
@@ -2792,6 +2797,13 @@ components:
     Get-departureResponse:
       additionalProperties: false
       properties:
+        alighting_seq:
+          format: int64
+          type: integer
+        boarding_seq:
+          description: Tronçon du plan
+          format: int64
+          type: integer
         categories:
           items:
             $ref: "#/components/schemas/CategoryPrice"
@@ -2800,10 +2812,17 @@ components:
           $ref: "#/components/schemas/AdminDeparture"
         seat_map:
           $ref: "#/components/schemas/SeatMap"
+        unit_price:
+          description: Prix de base du tronçon (avant catégorie de siège)
+          format: int64
+          type: integer
       required:
         - departure
         - categories
         - seat_map
+        - boarding_seq
+        - alighting_seq
+        - unit_price
       type: object
     Get-loyalty-statsResponse:
       additionalProperties: false
@@ -6593,6 +6612,50 @@ components:
         - reason
         - arrived_at
       type: object
+    StopVisitView:
+      additionalProperties: false
+      properties:
+        accuracy:
+          format: float
+          type: number
+        arrived_at:
+          format: date-time
+          type: string
+        departed_at:
+          format: date-time
+          type: string
+        id:
+          type: string
+        latitude:
+          format: double
+          type: number
+        longitude:
+          format: double
+          type: number
+        mocked:
+          description: Position simulée signalée par le téléphone
+          type: boolean
+        note:
+          type: string
+        reason:
+          enum:
+            - planned
+            - police
+            - breakdown
+            - puncture
+            - pause
+            - traffic
+            - other
+          type: string
+        seq:
+          description: "Arrêt prévu ; absent : arrêt imprévu"
+          format: int32
+          type: integer
+      required:
+        - id
+        - reason
+        - arrived_at
+      type: object
     Sync-offline-scansRequest:
       additionalProperties: false
       properties:
@@ -8844,6 +8907,22 @@ paths:
           required: true
           schema:
             type: string
+        - description: "Plan et prix sur ce tronçon (guichet) ; absent : tout le trajet"
+          explode: false
+          in: query
+          name: boarding
+          schema:
+            default: -1
+            description: "Plan et prix sur ce tronçon (guichet) ; absent : tout le trajet"
+            format: int64
+            type: integer
+        - explode: false
+          in: query
+          name: alighting
+          schema:
+            default: -1
+            format: int64
+            type: integer
       responses:
         "200":
           content:
