@@ -5,6 +5,7 @@ package segment
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -110,11 +111,28 @@ func Pricing(ctx context.Context, q *store.Queries, route store.Route) (itinerar
 
 // Plan : trajet complet (arrêts, montée, descente, prix) pour un départ.
 func Plan(ctx context.Context, q *store.Queries, d store.Departure, boarding, alighting *int, sellerAgency *uuid.UUID) (Trip, error) {
+	return plan(ctx, q, d, boarding, alighting, sellerAgency, false)
+}
+
+// PlanOnboard : trajet d'un voyageur pris à bord. Il peut monter à n'importe quel arrêt
+// (y compris un arrêt fermé à la réservation : le car l'a pris en route).
+func PlanOnboard(ctx context.Context, q *store.Queries, d store.Departure, boarding, alighting *int) (Trip, error) {
+	return plan(ctx, q, d, boarding, alighting, nil, true)
+}
+
+func plan(ctx context.Context, q *store.Queries, d store.Departure, boarding, alighting *int, sellerAgency *uuid.UUID, onboard bool) (Trip, error) {
 	stops, err := LoadStops(ctx, q, d.ID)
 	if err != nil {
 		return Trip{}, err
 	}
-	b, a, err := Resolve(stops, boarding, alighting, sellerAgency)
+	check := stops
+	if onboard {
+		check = slices.Clone(stops)
+		for i := range check {
+			check[i].CanBoard = true
+		}
+	}
+	b, a, err := Resolve(check, boarding, alighting, sellerAgency)
 	if err != nil {
 		return Trip{}, err
 	}

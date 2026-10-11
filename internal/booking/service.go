@@ -11,6 +11,7 @@ package booking
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -79,9 +80,14 @@ func (s *Service) create(ctx context.Context, tx pgx.Tx, q *store.Queries, cc cr
 	if len(in.Passengers) == 0 || len(in.Passengers) > maxPassengers {
 		return store.Booking{}, huma.Error422UnprocessableEntity(fmt.Sprintf("Entre 1 et %d passagers par réservation", maxPassengers))
 	}
-	contactPhone, err := phone.Normalize(in.ContactPhone, s.Cfg.DefaultCountryCode)
-	if err != nil {
-		return store.Booking{}, huma.Error422UnprocessableEntity("Téléphone de contact invalide")
+	onboard := cc.channel == "onboard"
+	// Vente à bord : téléphone facultatif (reçu à l'écran, pas de SMS ni de fidélité).
+	contactPhone := ""
+	if !onboard || strings.TrimSpace(in.ContactPhone) != "" {
+		var err error
+		if contactPhone, err = phone.Normalize(in.ContactPhone, s.Cfg.DefaultCountryCode); err != nil {
+			return store.Booking{}, huma.Error422UnprocessableEntity("Téléphone de contact invalide")
+		}
 	}
 
 	dep, err := q.LockDepartureForBooking(ctx, in.DepartureID)
@@ -95,25 +101,33 @@ func (s *Service) create(ctx context.Context, tx pgx.Tx, q *store.Queries, cc cr
 		return store.Booking{}, apix.NotFound("Départ")
 	}
 	// Trajet du voyageur : arrêt de montée → arrêt de descente, prix de ce trajet.
-	trip, err := segment.Plan(ctx, q, departureOf(dep), in.BoardingSeq, in.AlightingSeq, cc.agencyID)
+	var trip segment.Trip
+	if onboard {
+		trip, err = segment.PlanOnboard(ctx, q, departureOf(dep), in.BoardingSeq, in.AlightingSeq)
+	} else {
+		trip, err = segment.Plan(ctx, q, departureOf(dep), in.BoardingSeq, in.AlightingSeq, cc.agencyID)
+	}
 	if err != nil {
 		return store.Booking{}, err
 	}
-	if err := segment.OpenForSale(ctx, q, departureOf(dep), trip.Boarding); err != nil {
-		return store.Booking{}, err
-	}
-	// Délai de vente compté depuis l'heure prévue à l'arrêt de montée (pas depuis le premier arrêt).
-	cutoff := time.Duration(dep.SalesCutoffMinutes) * time.Minute
-	if cc.channel == "counter" {
-		cutoff = 0 // le guichet peut vendre jusqu'au passage du car
-	}
-	if cc.channel != "counter" && time.Now().Add(cutoff).After(trip.BoardingStop().ScheduledAt) {
-		return store.Booking{}, huma.Error409Conflict("Les ventes sont closes pour ce départ")
+	// Vente à bord : le voyageur est déjà dans le car (ni délai de vente, ni contrôle « car parti »).
+	if !onboard {
+		if err := segment.OpenForSale(ctx, q, departureOf(dep), trip.Boarding); err != nil {
+			return store.Booking{}, err
+		}
+		// Délai de vente compté depuis l'heure prévue à l'arrêt de montée (pas depuis le premier arrêt).
+		cutoff := time.Duration(dep.SalesCutoffMinutes) * time.Minute
+		if cc.channel != "counter" && time.Now().Add(cutoff).After(trip.BoardingStop().ScheduledAt) {
+			return store.Booking{}, huma.Error409Conflict("Les ventes sont closes pour ce départ")
+		}
+	} else if dep.Status == "cancelled" {
+		// Départ arrivé : accepté (ventes faites sans réseau, envoyées après l'arrivée).
+		return store.Booking{}, huma.Error409Conflict("Départ annulé : vente à bord impossible")
 	}
 
-	// Vente au guichet : le client est identifié par son téléphone (fidélité),
+	// Vente au guichet ou à bord : le client est identifié par son téléphone (fidélité),
 	// sauf modification d'une réservation existante (le client est déjà connu).
-	if cc.channel == "counter" && cc.customerID == nil {
+	if (cc.channel == "counter" || (onboard && contactPhone != "")) && cc.customerID == nil {
 		c, err := q.UpsertCustomerByPhone(ctx, store.UpsertCustomerByPhoneParams{
 			Phone: &contactPhone, FullName: in.ContactName, ReferralCode: refgen.Referral(),
 		})
@@ -139,6 +153,17 @@ func (s *Service) create(ctx context.Context, tx pgx.Tx, q *store.Queries, cc cr
 	for _, c := range cats {
 		categories[c.ID] = c
 	}
+	// Places du quota du contrôleur (« onboard ») : vendables seulement à bord.
+	onboardSeats := map[uuid.UUID]bool{}
+	for i, c := range seatMap {
+		if c.State == "onboard" {
+			if onboard {
+				onboardSeats[c.ID] = true
+			} else {
+				seatMap[i].State = "blocked"
+			}
+		}
+	}
 	cells := make(map[uuid.UUID]store.GetDepartureSeatMapRow, len(seatMap))
 	for _, c := range seatMap {
 		cells[c.ID] = c
@@ -160,7 +185,7 @@ func (s *Service) create(ctx context.Context, tx pgx.Tx, q *store.Queries, cc cr
 		if chosen[c.ID] {
 			return store.Booking{}, huma.Error422UnprocessableEntity("Le même siège est demandé deux fois")
 		}
-		if c.State != "available" {
+		if c.State != "available" && !(onboard && c.State == "onboard") {
 			return store.Booking{}, huma.Error409Conflict(fmt.Sprintf("Le siège %s n'est plus disponible", *c.SeatLabel))
 		}
 		chosen[c.ID] = true
@@ -173,6 +198,16 @@ func (s *Service) create(ctx context.Context, tx pgx.Tx, q *store.Queries, cc cr
 			prefs = *in.Preferences
 		}
 		picked := pickSeats(seatMap, categories, prefs, autoCount, chosen)
+		if picked == nil && len(onboardSeats) > 0 {
+			// À bord : les places ordinaires d'abord, puis le quota du contrôleur.
+			withQuota := slices.Clone(seatMap)
+			for i, c := range withQuota {
+				if onboardSeats[c.ID] {
+					withQuota[i].State = "available"
+				}
+			}
+			picked = pickSeats(withQuota, categories, prefs, autoCount, chosen)
+		}
 		if picked == nil {
 			msg := "Plus assez de sièges disponibles sur ce départ"
 			if prefs.CategoryCode != "" {
@@ -199,6 +234,10 @@ func (s *Service) create(ctx context.Context, tx pgx.Tx, q *store.Queries, cc cr
 	early, err := pricing.EarlyBirdFor(ctx, q, dep.CompanyID, dep.RouteID, dep.ID, dep.DepartureAt, now)
 	if err != nil {
 		return store.Booking{}, err
+	}
+	// À bord : prix fixe, annoncé sans réseau (ni réservez-tôt, ni remise de fidélité, ni code promo).
+	if onboard {
+		tierPct, early, in.PromoCode = 0, nil, ""
 	}
 	type line struct {
 		cell                                                    store.GetDepartureSeatMapRow
@@ -240,7 +279,7 @@ func (s *Service) create(ctx context.Context, tx pgx.Tx, q *store.Queries, cc cr
 			return store.Booking{}, err
 		}
 		promoCode, promoAmount = &pc, amount
-	} else if cc.channel != "counter" {
+	} else if cc.channel != "counter" && !onboard {
 		if referral, referralAmount, err = pricing.Referral(ctx, q, dep.CompanyID, cc.customerID, contactPhone, subtotal-discount); err != nil {
 			return store.Booking{}, err
 		}
@@ -251,7 +290,7 @@ func (s *Service) create(ctx context.Context, tx pgx.Tx, q *store.Queries, cc cr
 	var pointsAmount int64
 	afterOffers := subtotal - discount - promoAmount - referralAmount
 	if in.RedeemPoints > 0 {
-		if cc.channel == "counter" {
+		if cc.channel == "counter" || onboard {
 			return store.Booking{}, huma.Error422UnprocessableEntity("L'utilisation de points se fait depuis l'application du client")
 		}
 		pointsUsed, pointsAmount = lc.RedeemableAmount(in.RedeemPoints, afterOffers)

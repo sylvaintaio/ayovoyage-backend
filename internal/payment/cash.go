@@ -47,15 +47,17 @@ type CashClosure struct {
 }
 
 type CashSummary struct {
-	AgencyID     uuid.UUID      `json:"agency_id"`
-	BusinessDate string         `json:"business_date" format:"date"`
-	CashIn       int64          `json:"cash_in" doc:"Encaissements en espèces (ventes et modifications au guichet)"`
-	SalesCount   int32          `json:"sales_count"`
-	CashOut      int64          `json:"cash_out" doc:"Remboursements versés en espèces par l'agence"`
-	RefundsCount int32          `json:"refunds_count"`
-	ExpectedCash int64          `json:"expected_cash"`
-	ByCashier    []CashierTotal `json:"by_cashier"`
-	Closure      *CashClosure   `json:"closure,omitempty" doc:"Présent si la journée est déjà clôturée"`
+	AgencyID       uuid.UUID      `json:"agency_id"`
+	BusinessDate   string         `json:"business_date" format:"date"`
+	CashIn         int64          `json:"cash_in" doc:"Encaissements en espèces (ventes et modifications au guichet)"`
+	SalesCount     int32          `json:"sales_count"`
+	CashOut        int64          `json:"cash_out" doc:"Remboursements versés en espèces par l'agence"`
+	RefundsCount   int32          `json:"refunds_count"`
+	OnboardIn      int64          `json:"onboard_in" doc:"Caisses de bord remises par les contrôleurs (montant compté)"`
+	HandoversCount int32          `json:"handovers_count"`
+	ExpectedCash   int64          `json:"expected_cash" doc:"cash_in + onboard_in - cash_out"`
+	ByCashier      []CashierTotal `json:"by_cashier"`
+	Closure        *CashClosure   `json:"closure,omitempty" doc:"Présent si la journée est déjà clôturée"`
 }
 
 var cashRoles = []string{auth.RoleCompanyAdmin, auth.RoleAgencyManager, auth.RoleCashier, auth.RoleFinance}
@@ -99,7 +101,8 @@ func (s *Service) cashSummary(ctx context.Context, q *store.Queries, companyID, 
 		return out, err
 	}
 	out.CashIn, out.SalesCount, out.CashOut, out.RefundsCount = t.CashIn, t.SalesCount, t.CashOut, t.RefundsCount
-	out.ExpectedCash = t.CashIn - t.CashOut
+	out.OnboardIn, out.HandoversCount = t.OnboardIn, t.HandoversCount
+	out.ExpectedCash = t.CashIn + t.OnboardIn - t.CashOut
 	rows, err := q.CashByCashier(ctx, store.CashByCashierParams{CompanyID: companyID, AgencyID: &agencyID, FromTs: from, ToTs: to})
 	if err != nil {
 		return out, err
@@ -191,7 +194,7 @@ func (s *Service) registerCash(api huma.API) {
 					return huma.Error422UnprocessableEntity("Écart de caisse : expliquez-le dans le commentaire")
 				}
 				c, err := q.InsertCashClosure(ctx, store.InsertCashClosureParams{
-					CompanyID: p.CompanyID, AgencyID: agencyID, BusinessDate: from, CashIn: sum.CashIn, CashOut: sum.CashOut,
+					CompanyID: p.CompanyID, AgencyID: agencyID, BusinessDate: from, CashIn: sum.CashIn + sum.OnboardIn, CashOut: sum.CashOut,
 					ExpectedCash: sum.ExpectedCash, CountedCash: in.Body.CountedCash, SalesCount: sum.SalesCount,
 					Note: in.Body.Note, ClosedBy: p.ID,
 				})

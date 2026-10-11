@@ -203,6 +203,9 @@ func LoadSeatMap(ctx context.Context, q *store.Queries, companyID, departureID, 
 	used := map[uuid.UUID]bool{}
 	for _, r := range rows {
 		cell := SeatCell{ID: r.ID, Row: r.RowIndex, Col: r.ColIndex, Kind: r.Kind, State: r.State}
+		if r.State == "onboard" { // place du quota du contrôleur : bloquée pour les autres canaux
+			cell.State = "blocked"
+		}
 		if r.Kind == "seat" && r.CategoryID != nil {
 			cell.SeatLabel = *r.SeatLabel
 			cell.CategoryID = r.CategoryID
@@ -288,6 +291,7 @@ func (h *Handler) ChangeStatus(ctx context.Context, p auth.Principal, id uuid.UU
 // ---------------------------------------------------------------- Routes
 
 func (h *Handler) Register(api huma.API) {
+	h.registerOnboard(api)
 	huma.Register(api, apix.WithDescription(apix.Op("search-departures", http.MethodGet, "/v1/public/departures/search", tagPublic,
 		"Rechercher des départs", apix.Public),
 		"La date est interprétée à l'heure locale (Afrique de l'Ouest, UTC+1). Les départs dont la vente est close sont exclus."),
@@ -521,6 +525,9 @@ func (h *Handler) registerAdmin(api huma.API) {
 				if err := saveCrew(ctx, q, p.CompanyID, d.ID, b.Crew); err != nil {
 					return err
 				}
+				if _, err := applyDefaultQuota(ctx, q, d, &p.ID); err != nil {
+					return err
+				}
 				out.Body = AdminDeparture{ID: d.ID, RouteID: d.RouteID, RouteName: route.Name, BusID: d.BusID, PlateNumber: bus.PlateNumber,
 					DepartureAt: d.DepartureAt, ArrivalEta: d.ArrivalEta, BasePrice: d.BasePrice, Status: d.Status,
 					DriverID: d.DriverID, AgentID: d.AgentID, Notes: d.Notes}
@@ -621,6 +628,9 @@ func (h *Handler) registerAdmin(api huma.API) {
 							return err
 						}
 						if err := saveCrew(ctx, q, p.CompanyID, d.ID, b.Crew); err != nil {
+							return err
+						}
+						if _, err := applyDefaultQuota(ctx, q, d, &p.ID); err != nil {
 							return err
 						}
 					}

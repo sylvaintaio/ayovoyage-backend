@@ -38,7 +38,8 @@ UPDATE companies SET
     pay_later_max_seats       = @pay_later_max_seats,
     pay_later_max_active      = @pay_later_max_active,
     pay_later_quota_percent   = @pay_later_quota_percent,
-    pay_later_strikes         = @pay_later_strikes
+    pay_later_strikes         = @pay_later_strikes,
+    onboard_quota_seats       = COALESCE(sqlc.narg(onboard_quota_seats), onboard_quota_seats)
 WHERE id = @id
 RETURNING *;
 

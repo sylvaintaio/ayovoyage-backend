@@ -138,7 +138,14 @@ SELECT
     (SELECT count(*) FROM refunds r
      WHERE r.company_id = @company_id AND r.processed_agency_id = @agency_id AND r.process_method = 'cash'
        AND r.status = 'processed'
-       AND r.processed_at >= @from_ts::timestamptz AND r.processed_at < @to_ts::timestamptz)::int AS refunds_count;
+       AND r.processed_at >= @from_ts::timestamptz AND r.processed_at < @to_ts::timestamptz)::int AS refunds_count,
+    -- Caisses de bord remises à l'agence par les contrôleurs (montant compté).
+    coalesce((SELECT sum(h.counted_cash) FROM onboard_cash_handovers h
+              WHERE h.company_id = @company_id AND h.agency_id = @agency_id
+                AND h.received_at >= @from_ts::timestamptz AND h.received_at < @to_ts::timestamptz), 0)::bigint AS onboard_in,
+    (SELECT count(*) FROM onboard_cash_handovers h
+     WHERE h.company_id = @company_id AND h.agency_id = @agency_id
+       AND h.received_at >= @from_ts::timestamptz AND h.received_at < @to_ts::timestamptz)::int AS handovers_count;
 
 -- name: CashByCashier :many
 SELECT s.id AS staff_id, s.full_name, count(*)::int AS sales_count, sum(p.amount)::bigint AS amount

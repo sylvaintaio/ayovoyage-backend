@@ -134,6 +134,8 @@ type Booking struct {
 	ReferralAmount       int64
 	BoardingSeq          int32
 	AlightingSeq         int32
+	ClientSaleID         *string
+	SoldOffline          bool
 }
 
 type BookingSeat struct {
@@ -243,6 +245,7 @@ type Company struct {
 	PayLaterMaxActive       int32
 	PayLaterQuotaPercent    int32
 	PayLaterStrikes         int32
+	OnboardQuotaSeats       int32
 }
 
 type Customer struct {
@@ -291,6 +294,7 @@ type DepartureBlockedSeat struct {
 	Reason      string
 	BlockedBy   *uuid.UUID
 	CreatedAt   time.Time
+	Kind        string
 }
 
 type DepartureCrew struct {
@@ -513,6 +517,37 @@ type Notification struct {
 	CreatedAt  time.Time
 	Subject    string
 	Body       string
+}
+
+type OnboardCashHandover struct {
+	ID           uuid.UUID
+	CompanyID    uuid.UUID
+	DepartureID  uuid.UUID
+	ControllerID *uuid.UUID
+	AgencyID     uuid.UUID
+	ExpectedCash int64
+	CountedCash  int64
+	Difference   *int64
+	SalesCount   int32
+	Note         string
+	ReceivedBy   uuid.UUID
+	ReceivedAt   time.Time
+}
+
+type OnboardSaleIssue struct {
+	ID           uuid.UUID
+	CompanyID    uuid.UUID
+	DepartureID  uuid.UUID
+	StaffID      uuid.UUID
+	ClientSaleID string
+	Reason       string
+	Amount       int64
+	Payload      json.RawMessage
+	SoldAt       time.Time
+	ResolvedAt   *time.Time
+	ResolvedBy   *uuid.UUID
+	Resolution   string
+	CreatedAt    time.Time
 }
 
 type OtpCode struct {

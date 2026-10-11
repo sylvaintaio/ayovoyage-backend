@@ -161,7 +161,7 @@ func build(ctx context.Context, cfg config.Config, db *database.DB) (*app, func(
 		bookings,
 		&payment.Service{DB: db, Cfg: cfg, Bookings: bookings, Providers: providers},
 		tickets,
-		&boarding.Handler{DB: db, Signer: signer, Queue: queue, Departures: departures},
+		&boarding.Handler{DB: db, Signer: signer, Queue: queue, Departures: departures, Bookings: bookings},
 		&loyalty.Handler{DB: db, Cfg: cfg},
 		&admin.Handler{DB: db},
 		parcels,

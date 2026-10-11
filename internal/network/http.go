@@ -73,6 +73,7 @@ type CompanySettings struct {
 	InvoicePrefix           string           `json:"invoice_prefix" doc:"Préfixe des numéros de facture (ex. FAC → FAC-2026-000001)"`
 	InvoiceFooter           string           `json:"invoice_footer" doc:"Mentions en pied de facture (régime fiscal, conditions…)"`
 	PayLater                PayLaterSettings `json:"pay_later" doc:"Réservation sans paiement immédiat (payer en agence)"`
+	OnboardQuotaSeats       int32            `json:"onboard_quota_seats" doc:"Places réservées au contrôleur sur chaque nouveau départ (vente à bord sans réseau)"`
 }
 
 // PayLaterSettings : règles du paiement en agence.
@@ -158,6 +159,7 @@ func toSettings(c store.Company) CompanySettings {
 		TaxID: c.TaxID, TradeRegister: c.TradeRegister, Address: c.Address, InvoicePrefix: c.InvoicePrefix, InvoiceFooter: c.InvoiceFooter,
 		PayLater: PayLaterSettings{Enabled: c.PayLaterEnabled, HoldHours: c.PayLaterHoldHours, CutoffMinutes: c.PayLaterCutoffMinutes,
 			MaxSeats: c.PayLaterMaxSeats, MaxActive: c.PayLaterMaxActive, QuotaPercent: c.PayLaterQuotaPercent, Strikes: c.PayLaterStrikes},
+		OnboardQuotaSeats: c.OnboardQuotaSeats,
 	}
 }
 
@@ -336,6 +338,7 @@ func (h *Handler) registerAdmin(api huma.API) {
 				InvoicePrefix           string            `json:"invoice_prefix,omitempty" pattern:"^[A-Z0-9]{2,8}$" default:"FAC"`
 				InvoiceFooter           string            `json:"invoice_footer,omitempty" maxLength:"1000"`
 				PayLater                *PayLaterSettings `json:"pay_later,omitempty" doc:"Absent : règles inchangées"`
+				OnboardQuotaSeats       *int32            `json:"onboard_quota_seats,omitempty" minimum:"0" maximum:"20" doc:"Absent : inchangé"`
 			}
 		}) (*struct{ Body CompanySettings }, error) {
 			p := auth.MustFromContext(ctx)
@@ -361,6 +364,7 @@ func (h *Handler) registerAdmin(api huma.API) {
 					ChangeEnabled:           b.ChangeEnabled, ChangeCutoffHours: b.ChangeCutoffHours, ChangeFeeAmount: b.ChangeFeeAmount,
 					ChangeMaxCount: b.ChangeMaxCount, ChangeWindowDays: b.ChangeWindowDays, BaggageExtraPerKg: b.BaggageExtraPerKg,
 					TaxID: b.TaxID, TradeRegister: b.TradeRegister, Address: b.Address, InvoicePrefix: prefixOr(b.InvoicePrefix), InvoiceFooter: b.InvoiceFooter,
+					OnboardQuotaSeats: b.OnboardQuotaSeats,
 				})
 				if err != nil {
 					return err

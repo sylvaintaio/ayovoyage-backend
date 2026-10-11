@@ -228,10 +228,12 @@ const getDepartureSeatMap = `-- name: GetDepartureSeatMap :many
 SELECT c.id, c.row_index, c.col_index, c.kind, c.seat_label, c.category_id, c.extra_surcharge, c.attributes,
        (CASE
             WHEN c.kind <> 'seat' THEN 'none'
-            WHEN blk.seat_cell_id IS NOT NULL THEN 'blocked'
+            WHEN blk.seat_cell_id IS NOT NULL AND blk.kind <> 'onboard' THEN 'blocked'
             WHEN occ.ticket_status = 'used' THEN 'boarded'
             WHEN occ.status = 'sold' THEN 'sold'
             WHEN occ.status = 'held' THEN 'held'
+            -- Place du quota du contrôleur, libre sur ce tronçon : vendable seulement à bord.
+            WHEN blk.seat_cell_id IS NOT NULL THEN 'onboard'
             ELSE 'available'
         END)::text AS state,
        -- Texte vide pour un siège libre (sqlc ne déduit pas la nullabilité d'une sous-requête jointe à gauche).
@@ -274,6 +276,7 @@ type GetDepartureSeatMapRow struct {
 }
 
 // État de chaque case du plan sur le tronçon [from_seq, to_seq) : un siège est pris
+// (« onboard » : place du quota du contrôleur encore libre ; les autres canaux la voient « blocked »)
 // s'il est réservé ou vendu sur au moins un tronçon élémentaire de cet intervalle.
 // Tout le trajet : from_seq = 0, to_seq = dernier arrêt.
 func (q *Queries) GetDepartureSeatMap(ctx context.Context, arg GetDepartureSeatMapParams) ([]GetDepartureSeatMapRow, error) {

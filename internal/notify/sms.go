@@ -68,7 +68,13 @@ type preparedSMS struct {
 	maxSegments int
 }
 
+// ErrNoRecipient : pas de numéro (vente à bord sans téléphone) ; rien à envoyer ni à enregistrer.
+var ErrNoRecipient = errors.New("aucun numéro de téléphone")
+
 func (p preparedSMS) SendSMS(ctx context.Context, to, message string) error {
+	if strings.TrimSpace(to) == "" {
+		return ErrNoRecipient
+	}
 	num, err := phone.Normalize(to, p.countryCode)
 	if err != nil {
 		return fmt.Errorf("SMS non envoyé : numéro %q invalide", phone.Mask(to))

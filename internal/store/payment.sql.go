@@ -86,7 +86,14 @@ SELECT
     (SELECT count(*) FROM refunds r
      WHERE r.company_id = $1 AND r.processed_agency_id = $2 AND r.process_method = 'cash'
        AND r.status = 'processed'
-       AND r.processed_at >= $3::timestamptz AND r.processed_at < $4::timestamptz)::int AS refunds_count
+       AND r.processed_at >= $3::timestamptz AND r.processed_at < $4::timestamptz)::int AS refunds_count,
+    -- Caisses de bord remises à l'agence par les contrôleurs (montant compté).
+    coalesce((SELECT sum(h.counted_cash) FROM onboard_cash_handovers h
+              WHERE h.company_id = $1 AND h.agency_id = $2
+                AND h.received_at >= $3::timestamptz AND h.received_at < $4::timestamptz), 0)::bigint AS onboard_in,
+    (SELECT count(*) FROM onboard_cash_handovers h
+     WHERE h.company_id = $1 AND h.agency_id = $2
+       AND h.received_at >= $3::timestamptz AND h.received_at < $4::timestamptz)::int AS handovers_count
 `
 
 type CashTotalsParams struct {
@@ -97,10 +104,12 @@ type CashTotalsParams struct {
 }
 
 type CashTotalsRow struct {
-	CashIn       int64
-	SalesCount   int32
-	CashOut      int64
-	RefundsCount int32
+	CashIn         int64
+	SalesCount     int32
+	CashOut        int64
+	RefundsCount   int32
+	OnboardIn      int64
+	HandoversCount int32
 }
 
 // ============================ Caisse ============================
@@ -118,6 +127,8 @@ func (q *Queries) CashTotals(ctx context.Context, arg CashTotalsParams) (CashTot
 		&i.SalesCount,
 		&i.CashOut,
 		&i.RefundsCount,
+		&i.OnboardIn,
+		&i.HandoversCount,
 	)
 	return i, err
 }

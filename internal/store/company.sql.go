@@ -109,7 +109,7 @@ func (q *Queries) CreateCity(ctx context.Context, arg CreateCityParams) (City, e
 const createCompany = `-- name: CreateCompany :one
 INSERT INTO companies (name, slug, legal_name, phone, email)
 VALUES ($1, $2, $3, $4, $5)
-RETURNING id, name, slug, legal_name, phone, email, logo_url, currency, timezone, booking_hold_minutes, sales_cutoff_minutes, cancellation_cutoff_hours, cancellation_fee_percent, refund_approval_threshold, status, created_at, updated_at, change_enabled, change_cutoff_hours, change_fee_amount, change_max_count, change_window_days, baggage_extra_per_kg, tax_id, trade_register, address, invoice_prefix, invoice_footer, pay_later_enabled, pay_later_hold_hours, pay_later_cutoff_minutes, pay_later_max_seats, pay_later_max_active, pay_later_quota_percent, pay_later_strikes
+RETURNING id, name, slug, legal_name, phone, email, logo_url, currency, timezone, booking_hold_minutes, sales_cutoff_minutes, cancellation_cutoff_hours, cancellation_fee_percent, refund_approval_threshold, status, created_at, updated_at, change_enabled, change_cutoff_hours, change_fee_amount, change_max_count, change_window_days, baggage_extra_per_kg, tax_id, trade_register, address, invoice_prefix, invoice_footer, pay_later_enabled, pay_later_hold_hours, pay_later_cutoff_minutes, pay_later_max_seats, pay_later_max_active, pay_later_quota_percent, pay_later_strikes, onboard_quota_seats
 `
 
 type CreateCompanyParams struct {
@@ -165,6 +165,7 @@ func (q *Queries) CreateCompany(ctx context.Context, arg CreateCompanyParams) (C
 		&i.PayLaterMaxActive,
 		&i.PayLaterQuotaPercent,
 		&i.PayLaterStrikes,
+		&i.OnboardQuotaSeats,
 	)
 	return i, err
 }
@@ -223,7 +224,7 @@ func (q *Queries) GetCity(ctx context.Context, id uuid.UUID) (City, error) {
 }
 
 const getCompany = `-- name: GetCompany :one
-SELECT id, name, slug, legal_name, phone, email, logo_url, currency, timezone, booking_hold_minutes, sales_cutoff_minutes, cancellation_cutoff_hours, cancellation_fee_percent, refund_approval_threshold, status, created_at, updated_at, change_enabled, change_cutoff_hours, change_fee_amount, change_max_count, change_window_days, baggage_extra_per_kg, tax_id, trade_register, address, invoice_prefix, invoice_footer, pay_later_enabled, pay_later_hold_hours, pay_later_cutoff_minutes, pay_later_max_seats, pay_later_max_active, pay_later_quota_percent, pay_later_strikes FROM companies WHERE id = $1
+SELECT id, name, slug, legal_name, phone, email, logo_url, currency, timezone, booking_hold_minutes, sales_cutoff_minutes, cancellation_cutoff_hours, cancellation_fee_percent, refund_approval_threshold, status, created_at, updated_at, change_enabled, change_cutoff_hours, change_fee_amount, change_max_count, change_window_days, baggage_extra_per_kg, tax_id, trade_register, address, invoice_prefix, invoice_footer, pay_later_enabled, pay_later_hold_hours, pay_later_cutoff_minutes, pay_later_max_seats, pay_later_max_active, pay_later_quota_percent, pay_later_strikes, onboard_quota_seats FROM companies WHERE id = $1
 `
 
 func (q *Queries) GetCompany(ctx context.Context, id uuid.UUID) (Company, error) {
@@ -265,6 +266,7 @@ func (q *Queries) GetCompany(ctx context.Context, id uuid.UUID) (Company, error)
 		&i.PayLaterMaxActive,
 		&i.PayLaterQuotaPercent,
 		&i.PayLaterStrikes,
+		&i.OnboardQuotaSeats,
 	)
 	return i, err
 }
@@ -318,7 +320,7 @@ func (q *Queries) GetPublicAgencyBySlug(ctx context.Context, slug string) (GetPu
 }
 
 const listActiveCompanies = `-- name: ListActiveCompanies :many
-SELECT id, name, slug, legal_name, phone, email, logo_url, currency, timezone, booking_hold_minutes, sales_cutoff_minutes, cancellation_cutoff_hours, cancellation_fee_percent, refund_approval_threshold, status, created_at, updated_at, change_enabled, change_cutoff_hours, change_fee_amount, change_max_count, change_window_days, baggage_extra_per_kg, tax_id, trade_register, address, invoice_prefix, invoice_footer, pay_later_enabled, pay_later_hold_hours, pay_later_cutoff_minutes, pay_later_max_seats, pay_later_max_active, pay_later_quota_percent, pay_later_strikes FROM companies WHERE status = 'active' ORDER BY name
+SELECT id, name, slug, legal_name, phone, email, logo_url, currency, timezone, booking_hold_minutes, sales_cutoff_minutes, cancellation_cutoff_hours, cancellation_fee_percent, refund_approval_threshold, status, created_at, updated_at, change_enabled, change_cutoff_hours, change_fee_amount, change_max_count, change_window_days, baggage_extra_per_kg, tax_id, trade_register, address, invoice_prefix, invoice_footer, pay_later_enabled, pay_later_hold_hours, pay_later_cutoff_minutes, pay_later_max_seats, pay_later_max_active, pay_later_quota_percent, pay_later_strikes, onboard_quota_seats FROM companies WHERE status = 'active' ORDER BY name
 `
 
 func (q *Queries) ListActiveCompanies(ctx context.Context) ([]Company, error) {
@@ -366,6 +368,7 @@ func (q *Queries) ListActiveCompanies(ctx context.Context) ([]Company, error) {
 			&i.PayLaterMaxActive,
 			&i.PayLaterQuotaPercent,
 			&i.PayLaterStrikes,
+			&i.OnboardQuotaSeats,
 		); err != nil {
 			return nil, err
 		}
@@ -692,9 +695,10 @@ UPDATE companies SET
     pay_later_max_seats       = $25,
     pay_later_max_active      = $26,
     pay_later_quota_percent   = $27,
-    pay_later_strikes         = $28
-WHERE id = $29
-RETURNING id, name, slug, legal_name, phone, email, logo_url, currency, timezone, booking_hold_minutes, sales_cutoff_minutes, cancellation_cutoff_hours, cancellation_fee_percent, refund_approval_threshold, status, created_at, updated_at, change_enabled, change_cutoff_hours, change_fee_amount, change_max_count, change_window_days, baggage_extra_per_kg, tax_id, trade_register, address, invoice_prefix, invoice_footer, pay_later_enabled, pay_later_hold_hours, pay_later_cutoff_minutes, pay_later_max_seats, pay_later_max_active, pay_later_quota_percent, pay_later_strikes
+    pay_later_strikes         = $28,
+    onboard_quota_seats       = COALESCE($29, onboard_quota_seats)
+WHERE id = $30
+RETURNING id, name, slug, legal_name, phone, email, logo_url, currency, timezone, booking_hold_minutes, sales_cutoff_minutes, cancellation_cutoff_hours, cancellation_fee_percent, refund_approval_threshold, status, created_at, updated_at, change_enabled, change_cutoff_hours, change_fee_amount, change_max_count, change_window_days, baggage_extra_per_kg, tax_id, trade_register, address, invoice_prefix, invoice_footer, pay_later_enabled, pay_later_hold_hours, pay_later_cutoff_minutes, pay_later_max_seats, pay_later_max_active, pay_later_quota_percent, pay_later_strikes, onboard_quota_seats
 `
 
 type UpdateCompanySettingsParams struct {
@@ -726,6 +730,7 @@ type UpdateCompanySettingsParams struct {
 	PayLaterMaxActive       int32
 	PayLaterQuotaPercent    int32
 	PayLaterStrikes         int32
+	OnboardQuotaSeats       *int32
 	ID                      uuid.UUID
 }
 
@@ -759,6 +764,7 @@ func (q *Queries) UpdateCompanySettings(ctx context.Context, arg UpdateCompanySe
 		arg.PayLaterMaxActive,
 		arg.PayLaterQuotaPercent,
 		arg.PayLaterStrikes,
+		arg.OnboardQuotaSeats,
 		arg.ID,
 	)
 	var i Company
@@ -798,6 +804,7 @@ func (q *Queries) UpdateCompanySettings(ctx context.Context, arg UpdateCompanySe
 		&i.PayLaterMaxActive,
 		&i.PayLaterQuotaPercent,
 		&i.PayLaterStrikes,
+		&i.OnboardQuotaSeats,
 	)
 	return i, err
 }

@@ -2,6 +2,7 @@ package notify
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -44,6 +45,9 @@ func formatDate(t time.Time) string {
 // record enregistre un envoi dans l'historique du client (sujet et texte
 // compris) : c'est ce que le client retrouve dans « Mes messages ».
 func (n *Notifier) record(ctx context.Context, q *store.Queries, companyID, customerID *uuid.UUID, channel, template, to, subject, body string, sendErr error) {
+	if errors.Is(sendErr, ErrNoRecipient) {
+		return
+	}
 	sender := any(n.SMS)
 	if channel == "email" {
 		sender = n.Email
@@ -225,6 +229,9 @@ func (w *DepartureStatusWorker) Work(ctx context.Context, job *river.Job[jobs.De
 				msg = fmt.Sprintf(tpl, d.OriginCity, d.DestinationCity, c.BoardingStop, formatDate(c.BoardingAt))
 			}
 			err := n.SMS.SendSMS(ctx, c.ContactPhone, msg)
+			if errors.Is(err, ErrNoRecipient) {
+				continue
+			}
 			companyID := d.CompanyID
 			status, errMsg := DeliveryStatus(n.SMS, err)
 			_ = q.InsertNotification(ctx, store.InsertNotificationParams{

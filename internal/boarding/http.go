@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"busvoyage/internal/auth"
+	"busvoyage/internal/booking"
 	"busvoyage/internal/departure"
 	"busvoyage/internal/jobs"
 	"busvoyage/internal/platform/apix"
@@ -30,6 +31,7 @@ type Handler struct {
 	Signer     *ticketsign.Signer
 	Queue      *jobs.Queue
 	Departures *departure.Handler
+	Bookings   *booking.Service
 }
 
 // ---------------------------------------------------------------- DTO
@@ -56,6 +58,7 @@ type Manifest struct {
 	Passengers  []ManifestEntry           `json:"passengers"`
 	Stops       []departure.DepartureStop `json:"stops" doc:"Arrêts du départ, dans l'ordre : en attente et descentes par arrêt"`
 	Visits      []StopVisit               `json:"visits" doc:"Journal des arrêts déjà déclarés"`
+	Onboard     *departure.OnboardKit     `json:"onboard,omitempty" doc:"Contrôleur : places et prix pour vendre à bord, même sans réseau"`
 	GeneratedAt time.Time                 `json:"generated_at"`
 }
 
@@ -192,6 +195,7 @@ func (h *Handler) device(ctx context.Context, q *store.Queries, p auth.Principal
 
 func (h *Handler) Register(api huma.API) {
 	h.registerStopJournal(api)
+	h.registerOnboardSales(api)
 	huma.Register(api, apix.Op("list-agent-departures", http.MethodGet, "/v1/agent/departures", tagAgent,
 		"Départs du jour (affectés à moi ou à mon agence)", apix.Staff, fieldRoles...),
 		func(ctx context.Context, in *struct {
@@ -234,12 +238,19 @@ func (h *Handler) Register(api huma.API) {
 			p := auth.MustFromContext(ctx)
 			out := &struct{ Body Manifest }{Body: Manifest{DepartureID: in.ID, Passengers: []ManifestEntry{}, GeneratedAt: time.Now()}}
 			err := h.DB.Tx(ctx, p.Tenant(), func(_ pgx.Tx, q *store.Queries) error {
-				_, acc, err := h.loadDeparture(ctx, q, p, in.ID, false)
+				d, acc, err := h.loadDeparture(ctx, q, p, in.ID, false)
 				if err != nil {
 					return err
 				}
 				if out.Body.Stops, err = departure.LoadStops(ctx, q, in.ID); err != nil {
 					return err
+				}
+				if acc.controller || p.Role == auth.RoleCompanyAdmin {
+					kit, err := departure.LoadOnboardKit(ctx, q, d)
+					if err != nil {
+						return err
+					}
+					out.Body.Onboard = &kit
 				}
 				if out.Body.Visits, err = loadVisits(ctx, q, in.ID); err != nil {
 					return err
