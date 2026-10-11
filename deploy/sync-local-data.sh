@@ -56,7 +56,7 @@ ssh -t "$VPS" '
   chmod +x import-data.sh
   sudo FORCE=1 ./import-data.sh "$PWD/busvoyage.sql"
 
-  OWNER_URL=$(sudo sed -n "s/^MIGRATION_DATABASE_URL=//p" "$ENV" | tr -d "\x27\"")
+  OWNER_URL=$(sudo sed -n "s/^MIGRATION_DATABASE_URL=//p" "$ENV" | tr -d "\047\"")  # \047 : apostrophe (tr ne comprend pas \x27)
   psql "$OWNER_URL" -q -v ON_ERROR_STOP=1 -f after-import.sql >/dev/null
   echo "Double authentification réinitialisée, sessions fermées."
 '
