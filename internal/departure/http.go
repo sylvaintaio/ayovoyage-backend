@@ -328,7 +328,7 @@ func (h *Handler) Register(api huma.API) {
 					out.Body = append(out.Body, SearchResult{ID: r.ID, CompanyID: r.CompanyID, CompanyName: r.CompanyName,
 						DepartureAt: r.BoardingAt, ArrivalEta: r.AlightingAt, DurationMinutes: int32(r.AlightingAt.Sub(r.BoardingAt).Minutes()),
 						BasePrice: itinerary.SegmentPrice(pr, r.BasePrice, r.BoardingCityID, r.AlightingCityID),
-						Status: r.Status, RouteName: r.RouteName, OriginCity: r.BoardingCity,
+						Status:    r.Status, RouteName: r.RouteName, OriginCity: r.BoardingCity,
 						OriginAgencyID: derefID(r.BoardingAgencyID), OriginAgencyName: r.BoardingStopName, DestinationCity: r.AlightingCity,
 						DestinationAgencyName: r.AlightingStopName, BoardingSeq: int(r.BoardingSeq), AlightingSeq: int(r.AlightingSeq),
 						BusDepartureAt: r.DepartureAt, BusModel: r.BusModel, BusAmenities: r.BusAmenities, SeatCount: r.SeatCount,
