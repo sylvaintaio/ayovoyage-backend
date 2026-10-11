@@ -176,20 +176,6 @@ func (h *Handler) device(ctx context.Context, q *store.Queries, p auth.Principal
 	return &id, q.TouchDevice(ctx, id)
 }
 
-func (h *Handler) checkDeparture(ctx context.Context, q *store.Queries, p auth.Principal, id uuid.UUID) (store.Departure, error) {
-	d, err := q.GetDeparture(ctx, id)
-	if database.IsNotFound(err) {
-		return d, apix.NotFound("Départ")
-	}
-	if err != nil {
-		return d, err
-	}
-	if d.Status == "cancelled" || d.Status == "arrived" {
-		return d, huma.Error409Conflict("Ce départ n'accepte plus d'embarquement")
-	}
-	return d, nil
-}
-
 // ---------------------------------------------------------------- Routes
 
 func (h *Handler) Register(api huma.API) {
@@ -210,6 +196,9 @@ func (h *Handler) Register(api huma.API) {
 			params := store.ListDeparturesParams{CompanyID: p.CompanyID, FromTs: day, ToTs: day.AddDate(0, 0, 1)}
 			switch {
 			case p.Role == auth.RoleBoardingAgent || p.Role == auth.RoleDriver:
+				if !inCrewWindow(day, time.Now()) { // équipage : de la veille au lendemain uniquement
+					return &struct{ Body []departure.AdminDeparture }{Body: []departure.AdminDeparture{}}, nil
+				}
 				params.StaffID = &p.ID
 			case p.AgencyID != nil:
 				params.OriginAgencyID = p.AgencyID
@@ -232,12 +221,17 @@ func (h *Handler) Register(api huma.API) {
 			p := auth.MustFromContext(ctx)
 			out := &struct{ Body Manifest }{Body: Manifest{DepartureID: in.ID, Passengers: []ManifestEntry{}, GeneratedAt: time.Now()}}
 			err := h.DB.Tx(ctx, p.Tenant(), func(_ pgx.Tx, q *store.Queries) error {
-				if _, err := q.GetDeparture(ctx, in.ID); err != nil {
-					return apix.NotFound("Départ")
+				_, acc, err := h.loadDeparture(ctx, q, p, in.ID, false)
+				if err != nil {
+					return err
 				}
 				rows, err := q.GetDepartureManifest(ctx, in.ID)
 				for _, r := range rows {
-					out.Body.Passengers = append(out.Body.Passengers, ManifestEntry(r))
+					e := ManifestEntry(r)
+					if !acc.phones {
+						e.PassengerPhone = "" // chauffeur : pas de coordonnées des voyageurs
+					}
+					out.Body.Passengers = append(out.Body.Passengers, e)
 					if r.TicketStatus != "cancelled" {
 						out.Body.Expected++
 					}
@@ -264,6 +258,12 @@ func (h *Handler) Register(api huma.API) {
 			}
 		}, error) {
 			p := auth.MustFromContext(ctx)
+			if err := h.DB.Tx(ctx, p.Tenant(), func(_ pgx.Tx, q *store.Queries) error {
+				_, _, err := h.loadDeparture(ctx, q, p, in.ID, false)
+				return err
+			}); err != nil {
+				return nil, apix.Err(err)
+			}
 			d, _, err := h.Departures.ChangeStatus(ctx, p, in.ID, in.Body.Status, "")
 			if err != nil {
 				return nil, apix.Err(err)
@@ -295,7 +295,7 @@ func (h *Handler) Register(api huma.API) {
 				if err != nil {
 					return err
 				}
-				if _, err := h.checkDeparture(ctx, q, p, in.ID); err != nil {
+				if _, _, err := h.loadDeparture(ctx, q, p, in.ID, true); err != nil {
 					return err
 				}
 				out.Body, err = h.scan(ctx, tx, q, p, in.ID, dev, scanInput{QRPayload: in.Body.QRPayload, ScannedAt: time.Now()})
@@ -328,8 +328,8 @@ func (h *Handler) Register(api huma.API) {
 				if err != nil {
 					return err
 				}
-				if _, err := q.GetDeparture(ctx, in.ID); err != nil {
-					return apix.NotFound("Départ")
+				if _, _, err := h.loadDeparture(ctx, q, p, in.ID, false); err != nil {
+					return err
 				}
 				now := time.Now()
 				for _, s := range scans {
