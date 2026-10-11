@@ -48,16 +48,18 @@ const listBookingsToRemind = `-- name: ListBookingsToRemind :many
 SELECT b.id
 FROM bookings b
 JOIN departures d ON d.id = b.departure_id
+JOIN departure_stops bst ON bst.departure_id = b.departure_id AND bst.seq = b.boarding_seq
 WHERE b.status = 'confirmed' AND b.reminder_sent_at IS NULL
-  AND d.status IN ('scheduled', 'boarding')
-  AND d.departure_at > now() + interval '12 hours' AND d.departure_at <= now() + interval '26 hours'
+  AND d.status IN ('scheduled', 'boarding', 'departed')
+  AND bst.scheduled_at > now() + interval '12 hours' AND bst.scheduled_at <= now() + interval '26 hours'
   AND b.confirmed_at <= now() - interval '1 hour'
-ORDER BY d.departure_at
+ORDER BY bst.scheduled_at
 LIMIT 500
 FOR UPDATE OF b SKIP LOCKED
 `
 
 // Rappel « la veille » : départ dans 12 à 26 h, réservation confirmée depuis plus d'une heure.
+// Heure de référence : passage prévu à l'arrêt de montée du voyageur.
 func (q *Queries) ListBookingsToRemind(ctx context.Context) ([]uuid.UUID, error) {
 	rows, err := q.db.Query(ctx, listBookingsToRemind)
 	if err != nil {
@@ -82,11 +84,12 @@ const listBookingsToRemindToday = `-- name: ListBookingsToRemindToday :many
 SELECT b.id
 FROM bookings b
 JOIN departures d ON d.id = b.departure_id
+JOIN departure_stops bst ON bst.departure_id = b.departure_id AND bst.seq = b.boarding_seq
 WHERE b.status = 'confirmed' AND b.day_reminder_sent_at IS NULL
-  AND d.status IN ('scheduled', 'boarding')
-  AND d.departure_at > now() + interval '3 hours' AND d.departure_at <= now() + interval '7 hours'
+  AND d.status IN ('scheduled', 'boarding', 'departed')
+  AND bst.scheduled_at > now() + interval '3 hours' AND bst.scheduled_at <= now() + interval '7 hours'
   AND b.confirmed_at <= now() - interval '1 hour'
-ORDER BY d.departure_at
+ORDER BY bst.scheduled_at
 LIMIT 500
 FOR UPDATE OF b SKIP LOCKED
 `
@@ -171,19 +174,32 @@ func (q *Queries) ListCustomerMessages(ctx context.Context, arg ListCustomerMess
 }
 
 const listDepartureContacts = `-- name: ListDepartureContacts :many
-SELECT DISTINCT b.contact_phone, b.customer_id
+SELECT DISTINCT ON (b.contact_phone) b.contact_phone, b.customer_id, bst.scheduled_at AS boarding_at, sp.name AS boarding_stop
 FROM bookings b
+JOIN departure_stops bst ON bst.departure_id = b.departure_id AND bst.seq = b.boarding_seq
+JOIN stop_points sp ON sp.id = bst.stop_point_id
 WHERE b.departure_id = $1 AND b.status = 'confirmed'
+  AND (NOT $2::bool OR b.boarding_seq = 0)
+ORDER BY b.contact_phone, bst.scheduled_at
 `
+
+type ListDepartureContactsParams struct {
+	DepartureID   uuid.UUID
+	FirstStopOnly bool
+}
 
 type ListDepartureContactsRow struct {
 	ContactPhone string
 	CustomerID   *uuid.UUID
+	BoardingAt   time.Time
+	BoardingStop string
 }
 
 // Contacts des réservations confirmées d'un départ (alerte retard, départ, arrivée).
-func (q *Queries) ListDepartureContacts(ctx context.Context, departureID uuid.UUID) ([]ListDepartureContactsRow, error) {
-	rows, err := q.db.Query(ctx, listDepartureContacts, departureID)
+// first_stop_only : seulement les voyageurs qui montent au premier arrêt (« embarquement ouvert »).
+// Un message par numéro : arrêt de montée et heure prévue à cet arrêt (le plus tôt s'il y en a plusieurs).
+func (q *Queries) ListDepartureContacts(ctx context.Context, arg ListDepartureContactsParams) ([]ListDepartureContactsRow, error) {
+	rows, err := q.db.Query(ctx, listDepartureContacts, arg.DepartureID, arg.FirstStopOnly)
 	if err != nil {
 		return nil, err
 	}
@@ -191,7 +207,12 @@ func (q *Queries) ListDepartureContacts(ctx context.Context, departureID uuid.UU
 	items := []ListDepartureContactsRow{}
 	for rows.Next() {
 		var i ListDepartureContactsRow
-		if err := rows.Scan(&i.ContactPhone, &i.CustomerID); err != nil {
+		if err := rows.Scan(
+			&i.ContactPhone,
+			&i.CustomerID,
+			&i.BoardingAt,
+			&i.BoardingStop,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

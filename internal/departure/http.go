@@ -43,6 +43,9 @@ type Handler struct {
 // ParcelHook : colis et bagages suivent le statut du départ (parti, arrivé, annulé).
 type ParcelHook interface {
 	OnDepartureStatus(ctx context.Context, q *store.Queries, departureID uuid.UUID, status string) error
+	// Journal des arrêts : départ d'une agence (colis chargés là partent), arrivée à une agence (déchargement).
+	OnStopDeparture(ctx context.Context, q *store.Queries, departureID, agencyID uuid.UUID) error
+	OnStopArrival(ctx context.Context, q *store.Queries, departureID, agencyID uuid.UUID) error
 }
 
 // ---------------------------------------------------------------- DTO

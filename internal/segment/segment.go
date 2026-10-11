@@ -158,3 +158,21 @@ func OpenForSale(ctx context.Context, q *store.Queries, d store.Departure, board
 	}
 	return nil
 }
+
+// ForBooking remplace, dans le détail d'un départ, les extrémités de la ligne par le trajet
+// du voyageur : arrêt et heure de montée, arrêt et heure de descente. À appeler partout où un
+// départ est présenté pour une réservation (fiche, billet, e-mails, rappels, facture).
+func ForBooking(ctx context.Context, q *store.Queries, d *store.GetDepartureDetailRow, bookingID uuid.UUID) error {
+	t, err := q.GetBookingTripView(ctx, bookingID)
+	if err != nil {
+		return err
+	}
+	d.DepartureAt, d.ArrivalEta = t.BoardingAt, t.AlightingAt
+	d.OriginCity, d.OriginAgencyName, d.OriginAgencyAddress = t.BoardingCity, t.BoardingStop, t.BoardingAddress
+	if t.BoardingAgencyID != nil {
+		d.OriginAgencyID = *t.BoardingAgencyID
+	}
+	d.DestinationCity, d.DestinationAgencyName, d.DestinationAgencyID = t.AlightingCity, t.AlightingStop, t.AlightingAgencyID
+	d.DurationMinutes = int32(t.AlightingAt.Sub(t.BoardingAt).Minutes())
+	return nil
+}

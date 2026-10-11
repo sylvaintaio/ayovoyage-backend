@@ -91,7 +91,9 @@ SELECT a.id AS agency_id, a.name AS agency_name,
 FROM bookings b
 JOIN departures d ON d.id = b.departure_id
 JOIN routes r ON r.id = d.route_id
-JOIN agencies a ON a.id = coalesce(b.agency_id, r.origin_agency_id)
+JOIN departure_stops bst ON bst.departure_id = d.id AND bst.seq = b.boarding_seq
+JOIN stop_points bsp ON bsp.id = bst.stop_point_id
+JOIN agencies a ON a.id = coalesce(b.agency_id, bsp.agency_id, r.origin_agency_id)
 WHERE b.company_id = @company_id AND b.status IN ('confirmed', 'changed')
   AND b.confirmed_at >= @from_ts::timestamptz AND b.confirmed_at < @to_ts::timestamptz
 GROUP BY a.id, a.name

@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"busvoyage/internal/platform/database"
+	"busvoyage/internal/segment"
 	"busvoyage/internal/store"
 )
 
@@ -198,6 +199,10 @@ func ForBooking(ctx context.Context, tx pgx.Tx, q *store.Queries, bookingID uuid
 		}
 		d, err := q.GetDepartureDetail(ctx, b.DepartureID)
 		if err != nil {
+			return err
+		}
+		// Trajet du voyageur (arrêt de montée → arrêt de descente), pas les extrémités de la ligne.
+		if err := segment.ForBooking(ctx, q, &d, b.ID); err != nil {
 			return err
 		}
 		seats, err := q.ListBookingSeats(ctx, b.ID)

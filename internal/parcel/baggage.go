@@ -17,6 +17,7 @@ import (
 	"busvoyage/internal/platform/apix"
 	"busvoyage/internal/platform/database"
 	"busvoyage/internal/platform/refgen"
+	"busvoyage/internal/segment"
 	"busvoyage/internal/store"
 )
 
@@ -104,8 +105,13 @@ func (s *Service) registerBaggage(api huma.API) {
 				if err != nil {
 					return err
 				}
-				if dep.Status != "scheduled" && dep.Status != "boarding" {
-					return huma.Error409Conflict("Le bus est déjà parti")
+				// Trajet du voyageur (arrêt de montée → arrêt de descente), pas les extrémités de la ligne.
+				if err := segment.ForBooking(ctx, q, &dep, bk.ID); err != nil {
+					return err
+				}
+				// Possible tant que le car n'a pas quitté l'arrêt de montée du voyageur.
+				if err := segment.OpenForSale(ctx, q, store.Departure{ID: dep.ID, Status: dep.Status}, int(bk.BoardingSeq)); err != nil {
+					return err
 				}
 				company, err := q.GetCompany(ctx, p.CompanyID)
 				if err != nil {

@@ -14,6 +14,7 @@ import (
 	"busvoyage/internal/jobs"
 	"busvoyage/internal/platform/database"
 	"busvoyage/internal/review"
+	"busvoyage/internal/segment"
 	"busvoyage/internal/store"
 )
 
@@ -106,6 +107,10 @@ func (w *BookingConfirmedWorker) Work(ctx context.Context, job *river.Job[jobs.B
 		if err != nil {
 			return err
 		}
+		// Trajet du voyageur (arrêt de montée → arrêt de descente), pas les extrémités de la ligne.
+		if err := segment.ForBooking(ctx, q, &d, b.ID); err != nil {
+			return err
+		}
 		tickets, err := q.ListBookingTickets(ctx, b.ID)
 		if err != nil {
 			return err
@@ -194,7 +199,7 @@ var departureMessages = map[string]string{
 	"departed":    "Votre bus %s → %s (%s) est parti.",
 	"arrived":     "Votre bus %s → %s (%s) est arrivé à destination.",
 	"cancelled":   "Le départ %s → %s du %s est annulé. Vous serez contacté pour un remboursement ou un report.",
-	"rescheduled": "Changement d'horaire : votre bus %s → %s part désormais le %s.",
+	"rescheduled": "Changement d'horaire : votre bus %s → %s passera désormais à %s le %s.",
 }
 
 func (w *DepartureStatusWorker) Work(ctx context.Context, job *river.Job[jobs.DepartureStatusArgs]) error {
@@ -208,12 +213,17 @@ func (w *DepartureStatusWorker) Work(ctx context.Context, job *river.Job[jobs.De
 		if err != nil {
 			return err
 		}
-		contacts, err := q.ListDepartureContacts(ctx, d.ID)
+		// « Embarquement ouvert » ne concerne que les voyageurs qui montent au premier arrêt.
+		contacts, err := q.ListDepartureContacts(ctx, store.ListDepartureContactsParams{DepartureID: d.ID,
+			FirstStopOnly: job.Args.Status == "boarding"})
 		if err != nil {
 			return err
 		}
-		msg := fmt.Sprintf(tpl, d.OriginCity, d.DestinationCity, formatDate(d.DepartureAt))
 		for _, c := range contacts {
+			msg := fmt.Sprintf(tpl, d.OriginCity, d.DestinationCity, formatDate(d.DepartureAt))
+			if job.Args.Status == "rescheduled" { // nouvelle heure de passage à l'arrêt de montée du voyageur
+				msg = fmt.Sprintf(tpl, d.OriginCity, d.DestinationCity, c.BoardingStop, formatDate(c.BoardingAt))
+			}
 			err := n.SMS.SendSMS(ctx, c.ContactPhone, msg)
 			companyID := d.CompanyID
 			status, errMsg := DeliveryStatus(n.SMS, err)
@@ -294,6 +304,10 @@ func (n *Notifier) remind(ctx context.Context, q *store.Queries, id uuid.UUID, s
 	}
 	d, err := q.GetDepartureDetail(ctx, b.DepartureID)
 	if err != nil {
+		return err
+	}
+	// Trajet du voyageur (arrêt de montée → arrêt de descente), pas les extrémités de la ligne.
+	if err := segment.ForBooking(ctx, q, &d, b.ID); err != nil {
 		return err
 	}
 	tickets, err := q.ListBookingTickets(ctx, b.ID)
@@ -402,6 +416,10 @@ func (w *PayLaterRemindersWorker) Work(ctx context.Context, _ *river.Job[jobs.Se
 func (n *Notifier) payLater(ctx context.Context, q *store.Queries, b store.Booking, event string) error {
 	d, err := q.GetDepartureDetail(ctx, b.DepartureID)
 	if err != nil {
+		return err
+	}
+	// Trajet du voyageur (arrêt de montée → arrêt de descente), pas les extrémités de la ligne.
+	if err := segment.ForBooking(ctx, q, &d, b.ID); err != nil {
 		return err
 	}
 	view := PayLaterView{

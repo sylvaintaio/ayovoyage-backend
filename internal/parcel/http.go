@@ -330,7 +330,7 @@ func (s *Service) registerParcels(api huma.API) {
 					return nil
 				}
 				rows, err := q.ListParcelDepartureOptions(ctx, store.ListParcelDepartureOptionsParams{
-					CompanyID: p.CompanyID, FromAgencyID: *v.CurrentAgencyID, DestinationAgencyID: v.DestinationAgencyID})
+					CompanyID: p.CompanyID, FromAgencyID: v.CurrentAgencyID, DestinationAgencyID: v.DestinationAgencyID})
 				for _, r := range rows {
 					out.Body = append(out.Body, ParcelDepartureOption{ID: r.ID, DepartureAt: r.DepartureAt, Status: r.Status, RouteName: r.RouteName,
 						ToAgencyName: r.ToAgencyName, IsDirect: r.IsDirect, ParcelsCount: r.ParcelsCount})

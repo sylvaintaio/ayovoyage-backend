@@ -198,6 +198,50 @@ func (q *Queries) DepartureLastSeq(ctx context.Context, departureID uuid.UUID) (
 	return column_1, err
 }
 
+const getBookingTripView = `-- name: GetBookingTripView :one
+SELECT bst.scheduled_at AS boarding_at, bsp.name AS boarding_stop, bsp.address AS boarding_address,
+       bsp.agency_id AS boarding_agency_id, bc.name AS boarding_city,
+       alt.scheduled_at AS alighting_at, asp.name AS alighting_stop, asp.agency_id AS alighting_agency_id, ac.name AS alighting_city
+FROM bookings b
+JOIN departure_stops bst ON bst.departure_id = b.departure_id AND bst.seq = b.boarding_seq
+JOIN stop_points bsp ON bsp.id = bst.stop_point_id
+JOIN cities bc ON bc.id = bsp.city_id
+JOIN departure_stops alt ON alt.departure_id = b.departure_id AND alt.seq = b.alighting_seq
+JOIN stop_points asp ON asp.id = alt.stop_point_id
+JOIN cities ac ON ac.id = asp.city_id
+WHERE b.id = $1
+`
+
+type GetBookingTripViewRow struct {
+	BoardingAt        time.Time
+	BoardingStop      string
+	BoardingAddress   string
+	BoardingAgencyID  *uuid.UUID
+	BoardingCity      string
+	AlightingAt       time.Time
+	AlightingStop     string
+	AlightingAgencyID *uuid.UUID
+	AlightingCity     string
+}
+
+// Trajet d une reservation pour l affichage (billet, e-mails, facture) : arrets, villes, heures prevues.
+func (q *Queries) GetBookingTripView(ctx context.Context, id uuid.UUID) (GetBookingTripViewRow, error) {
+	row := q.db.QueryRow(ctx, getBookingTripView, id)
+	var i GetBookingTripViewRow
+	err := row.Scan(
+		&i.BoardingAt,
+		&i.BoardingStop,
+		&i.BoardingAddress,
+		&i.BoardingAgencyID,
+		&i.BoardingCity,
+		&i.AlightingAt,
+		&i.AlightingStop,
+		&i.AlightingAgencyID,
+		&i.AlightingCity,
+	)
+	return i, err
+}
+
 const getStopPoint = `-- name: GetStopPoint :one
 SELECT sp.id, sp.company_id, sp.city_id, sp.agency_id, sp.name, sp.address, sp.latitude, sp.longitude, sp.is_active, sp.created_at, sp.updated_at FROM stop_points sp WHERE sp.id = $1 AND sp.company_id = $2
 `

@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"busvoyage/internal/auth"
+	"busvoyage/internal/departure"
 	"busvoyage/internal/platform/apix"
 	"busvoyage/internal/platform/database"
 	"busvoyage/internal/store"
@@ -107,6 +108,18 @@ func (h *Handler) registerStopJournal(api huma.API) {
 				if err != nil {
 					return err
 				}
+				// Agence de chaque arrêt : chargement et déchargement des colis au passage du car.
+				stopRows, err := q.ListDepartureStops(ctx, d.ID)
+				if err != nil {
+					return err
+				}
+				agencyAt := map[int32]uuid.UUID{}
+				for _, st := range stopRows {
+					if st.AgencyID != nil {
+						agencyAt[st.Seq] = *st.AgencyID
+					}
+				}
+				parcels := h.parcels()
 				now := time.Now()
 				for _, e := range events {
 					at := e.At
@@ -147,6 +160,11 @@ func (h *Handler) registerStopJournal(api huma.API) {
 						if e.Seq != nil && *e.Seq == last {
 							nextStatus = "arrived"
 						}
+						if ag, ok := agencyAtSeq(agencyAt, e.Seq); ok && parcels != nil {
+							if err := parcels.OnStopArrival(ctx, q, d.ID, ag); err != nil {
+								return err
+							}
+						}
 					case "departure":
 						// Départ déjà reçu (renvoi après coupure) : sans effet, même si un autre arrêt est ouvert depuis.
 						if prev, err := q.GetStopVisitByDepartureClientID(ctx, store.GetStopVisitByDepartureClientIDParams{
@@ -180,6 +198,11 @@ func (h *Handler) registerStopJournal(api huma.API) {
 						res.Result, res.Visit = "recorded", &visit
 						if v.Seq != nil && *v.Seq == 0 {
 							nextStatus = "departed"
+						}
+						if ag, ok := agencyAtSeq(agencyAt, v.Seq); ok && parcels != nil {
+							if err := parcels.OnStopDeparture(ctx, q, d.ID, ag); err != nil {
+								return err
+							}
 						}
 					}
 					out.Body = append(out.Body, res)
@@ -219,4 +242,20 @@ func (h *Handler) openVisit(ctx context.Context, q *store.Queries, departureID u
 		}
 	}
 	return nil, nil
+}
+
+func agencyAtSeq(m map[int32]uuid.UUID, seq *int32) (uuid.UUID, bool) {
+	if seq == nil {
+		return uuid.Nil, false
+	}
+	ag, ok := m[*seq]
+	return ag, ok
+}
+
+// parcels : colis et bagages (absent dans certains tests).
+func (h *Handler) parcels() departure.ParcelHook {
+	if h.Departures == nil {
+		return nil
+	}
+	return h.Departures.Parcels
 }

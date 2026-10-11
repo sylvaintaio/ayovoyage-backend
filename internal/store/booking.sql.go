@@ -655,9 +655,9 @@ func (q *Queries) GetReplacementBooking(ctx context.Context, changedFromBookingI
 const getTicketDetail = `-- name: GetTicketDetail :one
 SELECT t.id, t.company_id, t.booking_id, t.booking_seat_id, t.departure_id, t.ticket_number, t.qr_payload, t.status, t.boarded_at, t.boarded_by, t.issued_at, t.updated_at, bs.seat_label, bs.passenger_name, bs.passenger_phone, bs.total_price,
        sc.name AS category_name, b.reference AS booking_reference, b.customer_id,
-       d.departure_at, d.arrival_eta, r.name AS route_name, r.included_baggage_kg,
-       oa.name AS origin_agency_name, oa.address AS origin_agency_address, oc.name AS origin_city,
-       da.name AS destination_agency_name, dc.name AS destination_city,
+       bst.scheduled_at AS departure_at, alt.scheduled_at AS arrival_eta, r.name AS route_name, r.included_baggage_kg,
+       bsp.name AS origin_agency_name, bsp.address AS origin_agency_address, oc.name AS origin_city,
+       asp.name AS destination_agency_name, dc.name AS destination_city,
        co.name AS company_name, co.phone AS company_phone, co.currency, bu.plate_number
 FROM tickets t
 JOIN booking_seats bs ON bs.id = t.booking_seat_id
@@ -665,10 +665,12 @@ JOIN seat_categories sc ON sc.id = bs.category_id
 JOIN bookings b ON b.id = t.booking_id
 JOIN departures d ON d.id = t.departure_id
 JOIN routes r ON r.id = d.route_id
-JOIN agencies oa ON oa.id = r.origin_agency_id
-JOIN cities oc ON oc.id = oa.city_id
-JOIN agencies da ON da.id = r.destination_agency_id
-JOIN cities dc ON dc.id = da.city_id
+JOIN departure_stops bst ON bst.departure_id = d.id AND bst.seq = bs.from_seq
+JOIN stop_points bsp ON bsp.id = bst.stop_point_id
+JOIN cities oc ON oc.id = bsp.city_id
+JOIN departure_stops alt ON alt.departure_id = d.id AND alt.seq = bs.to_seq
+JOIN stop_points asp ON asp.id = alt.stop_point_id
+JOIN cities dc ON dc.id = asp.city_id
 JOIN companies co ON co.id = t.company_id
 JOIN buses bu ON bu.id = d.bus_id
 WHERE t.id = $1
@@ -709,6 +711,7 @@ type GetTicketDetailRow struct {
 	PlateNumber           string
 }
 
+// Trajet du voyageur : « origine » = arrêt de montée (heure de passage), « destination » = arrêt de descente.
 func (q *Queries) GetTicketDetail(ctx context.Context, id uuid.UUID) (GetTicketDetailRow, error) {
 	row := q.db.QueryRow(ctx, getTicketDetail, id)
 	var i GetTicketDetailRow

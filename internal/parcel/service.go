@@ -34,6 +34,7 @@ import (
 	"busvoyage/internal/platform/database"
 	"busvoyage/internal/platform/phone"
 	"busvoyage/internal/platform/refgen"
+	"busvoyage/internal/segment"
 	"busvoyage/internal/store"
 )
 
@@ -335,11 +336,19 @@ func (s *Service) Assign(ctx context.Context, p auth.Principal, id, departureID 
 		if err != nil || dep.CompanyID != p.CompanyID {
 			return apix.NotFound("Départ")
 		}
-		if dep.Status != "scheduled" && dep.Status != "boarding" {
-			return huma.Error409Conflict("Ce départ n'accepte plus de chargement")
+		// Le car doit s'arrêter à l'agence où se trouve le colis, et ne pas l'avoir encore quittée.
+		if parcel.CurrentAgencyID == nil {
+			return huma.Error422UnprocessableEntity("Ce colis n'est dans aucune agence")
 		}
-		if parcel.CurrentAgencyID == nil || dep.OriginAgencyID != *parcel.CurrentAgencyID {
-			return huma.Error422UnprocessableEntity("Ce départ ne part pas de l'agence où se trouve le colis")
+		loadSeq, err := q.DepartureStopAtAgency(ctx, store.DepartureStopAtAgencyParams{DepartureID: dep.ID, AgencyID: parcel.CurrentAgencyID})
+		if database.IsNotFound(err) {
+			return huma.Error422UnprocessableEntity("Ce départ ne s'arrête pas à l'agence où se trouve le colis")
+		}
+		if err != nil {
+			return err
+		}
+		if err := segment.OpenForSale(ctx, q, store.Departure{ID: dep.ID, Status: dep.Status}, int(loadSeq)); err != nil {
+			return huma.Error409Conflict("Ce départ n'accepte plus de chargement à cette agence")
 		}
 		parcel, err = q.SetParcelState(ctx, store.SetParcelStateParams{ID: parcel.ID, Status: "assigned",
 			CurrentAgencyID: parcel.CurrentAgencyID, DepartureID: &dep.ID})
@@ -347,7 +356,8 @@ func (s *Service) Assign(ctx context.Context, p auth.Principal, id, departureID 
 			return err
 		}
 		note := "Correspondance"
-		if dep.DestinationAgencyID != nil && *dep.DestinationAgencyID == parcel.DestinationAgencyID {
+		if _, err := q.DepartureStopAtAgency(ctx, store.DepartureStopAtAgencyParams{DepartureID: dep.ID,
+			AgencyID: &parcel.DestinationAgencyID}); err == nil {
 			note = "Trajet direct"
 		}
 		staffID := p.ID
@@ -428,6 +438,11 @@ func (s *Service) OnDepartureStatus(ctx context.Context, q *store.Queries, depar
 	for _, parcel := range parcels {
 		switch status {
 		case "departed":
+			// Départ du premier arrêt : seuls les colis de cette agence partent. Ceux à charger plus loin
+			// (Bohicon…) suivent le journal des arrêts (OnStopDeparture).
+			if parcel.CurrentAgencyID == nil || *parcel.CurrentAgencyID != dep.OriginAgencyID {
+				continue
+			}
 			if parcel.Status == "assigned" { // pas chargé : reste en agence
 				if err := s.backToAgency(ctx, q, parcel, nil, "left_behind", "Non chargé au départ du bus : à réaffecter"); err != nil {
 					return err
@@ -450,11 +465,67 @@ func (s *Service) OnDepartureStatus(ctx context.Context, q *store.Queries, depar
 				return err
 			}
 		case "arrived":
+			if parcel.Status != "in_transit" {
+				continue
+			}
+			// Agence de destination desservie par le car : déchargé là. Sinon correspondance au terminus.
 			// Ligne qui finit hors agence (gare routière) : le colis reste à décharger à la main.
-			if parcel.Status == "in_transit" && dep.DestinationAgencyID != nil {
-				if err := s.arrive(ctx, q, parcel, *dep.DestinationAgencyID, nil); err != nil {
+			at := dep.DestinationAgencyID
+			if _, err := q.DepartureStopAtAgency(ctx, store.DepartureStopAtAgencyParams{DepartureID: departureID,
+				AgencyID: &parcel.DestinationAgencyID}); err == nil {
+				at = &parcel.DestinationAgencyID
+			}
+			if at != nil {
+				if err := s.arrive(ctx, q, parcel, *at, nil); err != nil {
 					return err
 				}
+			}
+		}
+	}
+	return nil
+}
+
+// OnStopDeparture : le car quitte un arrêt situé à une agence (journal des arrêts). Les colis
+// chargés à cette agence partent ; ceux affectés mais non chargés restent sur place.
+func (s *Service) OnStopDeparture(ctx context.Context, q *store.Queries, departureID, agencyID uuid.UUID) error {
+	parcels, err := q.ListParcelsOnDeparture(ctx, &departureID)
+	if err != nil {
+		return err
+	}
+	for _, parcel := range parcels {
+		if parcel.CurrentAgencyID == nil || *parcel.CurrentAgencyID != agencyID {
+			continue
+		}
+		switch parcel.Status {
+		case "assigned":
+			if err := s.backToAgency(ctx, q, parcel, nil, "left_behind", "Non chargé au passage du bus : à réaffecter"); err != nil {
+				return err
+			}
+		case "loaded":
+			moved, err := q.SetParcelState(ctx, store.SetParcelStateParams{ID: parcel.ID, Status: "in_transit",
+				CurrentAgencyID: nil, DepartureID: parcel.DepartureID})
+			if err != nil {
+				return err
+			}
+			if err := s.event(ctx, q, moved, "departed", &agencyID, &departureID, nil, ""); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// OnStopArrival : le car arrive à un arrêt situé à une agence (journal des arrêts) ; les colis
+// destinés à cette agence y sont déchargés (prêts au retrait, code envoyé au destinataire).
+func (s *Service) OnStopArrival(ctx context.Context, q *store.Queries, departureID, agencyID uuid.UUID) error {
+	parcels, err := q.ListParcelsOnDeparture(ctx, &departureID)
+	if err != nil {
+		return err
+	}
+	for _, parcel := range parcels {
+		if parcel.Status == "in_transit" && parcel.DestinationAgencyID == agencyID {
+			if err := s.arrive(ctx, q, parcel, agencyID, nil); err != nil {
+				return err
 			}
 		}
 	}

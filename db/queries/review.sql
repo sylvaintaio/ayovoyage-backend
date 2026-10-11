@@ -5,11 +5,12 @@ SELECT b.id, b.company_id, b.contact_name, b.contact_phone, b.contact_email, b.c
        oc.name AS origin_city, dc.name AS destination_city, d.departure_at, co.name AS company_name
 FROM bookings b
 JOIN departures d ON d.id = b.departure_id
-JOIN routes r ON r.id = d.route_id
-JOIN agencies oa ON oa.id = r.origin_agency_id
-JOIN cities oc ON oc.id = oa.city_id
-JOIN agencies da ON da.id = r.destination_agency_id
-JOIN cities dc ON dc.id = da.city_id
+JOIN departure_stops bst ON bst.departure_id = b.departure_id AND bst.seq = b.boarding_seq
+JOIN stop_points bsp ON bsp.id = bst.stop_point_id
+JOIN cities oc ON oc.id = bsp.city_id
+JOIN departure_stops alt ON alt.departure_id = b.departure_id AND alt.seq = b.alighting_seq
+JOIN stop_points asp ON asp.id = alt.stop_point_id
+JOIN cities dc ON dc.id = asp.city_id
 JOIN companies co ON co.id = b.company_id
 WHERE b.status = 'confirmed'
   AND d.status = 'arrived' AND d.updated_at <= now() - interval '2 hours'
@@ -26,17 +27,21 @@ ON CONFLICT (booking_id) DO NOTHING
 RETURNING *;
 
 -- name: GetReviewInvitation :one
-SELECT ri.*, b.reference, b.contact_name, b.customer_id, b.departure_id, d.route_id, r.origin_agency_id,
-       d.departure_at, oc.name AS origin_city, dc.name AS destination_city, co.name AS company_name,
+-- origin_agency_id : agence de montée du voyageur (avis rattaché à cette agence).
+SELECT ri.*, b.reference, b.contact_name, b.customer_id, b.departure_id, d.route_id,
+       COALESCE(bsp.agency_id, r.origin_agency_id)::uuid AS origin_agency_id,
+       bst.scheduled_at AS departure_at, oc.name AS origin_city, dc.name AS destination_city, co.name AS company_name,
        EXISTS (SELECT 1 FROM reviews rv WHERE rv.booking_id = b.id) AS reviewed
 FROM review_invitations ri
 JOIN bookings b ON b.id = ri.booking_id
 JOIN departures d ON d.id = b.departure_id
 JOIN routes r ON r.id = d.route_id
-JOIN agencies oa ON oa.id = r.origin_agency_id
-JOIN cities oc ON oc.id = oa.city_id
-JOIN agencies da ON da.id = r.destination_agency_id
-JOIN cities dc ON dc.id = da.city_id
+JOIN departure_stops bst ON bst.departure_id = b.departure_id AND bst.seq = b.boarding_seq
+JOIN stop_points bsp ON bsp.id = bst.stop_point_id
+JOIN cities oc ON oc.id = bsp.city_id
+JOIN departure_stops alt ON alt.departure_id = b.departure_id AND alt.seq = b.alighting_seq
+JOIN stop_points asp ON asp.id = alt.stop_point_id
+JOIN cities dc ON dc.id = asp.city_id
 JOIN companies co ON co.id = b.company_id
 WHERE ri.token_hash = $1;
 
@@ -98,11 +103,9 @@ RETURNING *;
 SELECT rv.id, rv.rating, rv.comment, rv.display_name, rv.city, rv.reply, rv.created_at,
        oc.name AS origin_city, dc.name AS destination_city, co.name AS company_name
 FROM reviews rv
-JOIN routes r ON r.id = rv.route_id
-JOIN agencies oa ON oa.id = r.origin_agency_id
-JOIN cities oc ON oc.id = oa.city_id
-JOIN agencies da ON da.id = r.destination_agency_id
-JOIN cities dc ON dc.id = da.city_id
+JOIN route_terminals rt ON rt.route_id = rv.route_id
+JOIN cities oc ON oc.id = rt.origin_city_id
+JOIN cities dc ON dc.id = rt.destination_city_id
 JOIN companies co ON co.id = rv.company_id
 WHERE rv.status = 'published' AND co.status = 'active'
   AND (sqlc.narg('route_id')::uuid IS NULL OR rv.route_id = sqlc.narg('route_id')::uuid)

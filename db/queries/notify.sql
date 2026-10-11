@@ -4,9 +4,15 @@ VALUES (@company_id, @customer_id, @channel, @template, @recipient, @status, @er
 
 -- name: ListDepartureContacts :many
 -- Contacts des réservations confirmées d'un départ (alerte retard, départ, arrivée).
-SELECT DISTINCT b.contact_phone, b.customer_id
+-- first_stop_only : seulement les voyageurs qui montent au premier arrêt (« embarquement ouvert »).
+-- Un message par numéro : arrêt de montée et heure prévue à cet arrêt (le plus tôt s'il y en a plusieurs).
+SELECT DISTINCT ON (b.contact_phone) b.contact_phone, b.customer_id, bst.scheduled_at AS boarding_at, sp.name AS boarding_stop
 FROM bookings b
-WHERE b.departure_id = $1 AND b.status = 'confirmed';
+JOIN departure_stops bst ON bst.departure_id = b.departure_id AND bst.seq = b.boarding_seq
+JOIN stop_points sp ON sp.id = bst.stop_point_id
+WHERE b.departure_id = @departure_id AND b.status = 'confirmed'
+  AND (NOT @first_stop_only::bool OR b.boarding_seq = 0)
+ORDER BY b.contact_phone, bst.scheduled_at;
 
 -- name: WelcomeAlreadySent :one
 SELECT EXISTS (
@@ -26,14 +32,16 @@ LIMIT @lim;
 
 -- name: ListBookingsToRemind :many
 -- Rappel « la veille » : départ dans 12 à 26 h, réservation confirmée depuis plus d'une heure.
+-- Heure de référence : passage prévu à l'arrêt de montée du voyageur.
 SELECT b.id
 FROM bookings b
 JOIN departures d ON d.id = b.departure_id
+JOIN departure_stops bst ON bst.departure_id = b.departure_id AND bst.seq = b.boarding_seq
 WHERE b.status = 'confirmed' AND b.reminder_sent_at IS NULL
-  AND d.status IN ('scheduled', 'boarding')
-  AND d.departure_at > now() + interval '12 hours' AND d.departure_at <= now() + interval '26 hours'
+  AND d.status IN ('scheduled', 'boarding', 'departed')
+  AND bst.scheduled_at > now() + interval '12 hours' AND bst.scheduled_at <= now() + interval '26 hours'
   AND b.confirmed_at <= now() - interval '1 hour'
-ORDER BY d.departure_at
+ORDER BY bst.scheduled_at
 LIMIT 500
 FOR UPDATE OF b SKIP LOCKED;
 
@@ -45,11 +53,12 @@ UPDATE bookings SET reminder_sent_at = now() WHERE id = $1;
 SELECT b.id
 FROM bookings b
 JOIN departures d ON d.id = b.departure_id
+JOIN departure_stops bst ON bst.departure_id = b.departure_id AND bst.seq = b.boarding_seq
 WHERE b.status = 'confirmed' AND b.day_reminder_sent_at IS NULL
-  AND d.status IN ('scheduled', 'boarding')
-  AND d.departure_at > now() + interval '3 hours' AND d.departure_at <= now() + interval '7 hours'
+  AND d.status IN ('scheduled', 'boarding', 'departed')
+  AND bst.scheduled_at > now() + interval '3 hours' AND bst.scheduled_at <= now() + interval '7 hours'
   AND b.confirmed_at <= now() - interval '1 hour'
-ORDER BY d.departure_at
+ORDER BY bst.scheduled_at
 LIMIT 500
 FOR UPDATE OF b SKIP LOCKED;
 

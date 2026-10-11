@@ -106,28 +106,48 @@ SELECT * FROM parcels WHERE departure_id = $1 AND status IN ('assigned', 'loaded
 
 -- name: ListDepartureParcels :many
 -- Manifeste de chargement d'un départ.
+-- is_final_leg : le car s'arrête à l'agence de destination du colis (déchargé là, sans correspondance).
 SELECT p.id, p.tracking_number, p.status, p.recipient_name, p.category, p.weight_kg, p.pieces, p.description,
-       da.name AS destination_agency_name, (p.destination_agency_id = r.destination_agency_id) AS is_final_leg
+       da.name AS destination_agency_name,
+       EXISTS (SELECT 1 FROM departure_stops ds JOIN stop_points sp ON sp.id = ds.stop_point_id
+               WHERE ds.departure_id = d.id AND sp.agency_id = p.destination_agency_id)::bool AS is_final_leg
 FROM parcels p
 JOIN departures d ON d.id = p.departure_id
-JOIN routes r ON r.id = d.route_id
 JOIN agencies da ON da.id = p.destination_agency_id
 WHERE p.departure_id = $1
 ORDER BY p.status, p.tracking_number;
 
 -- name: ListParcelDepartureOptions :many
--- Départs possibles depuis l'agence où se trouve le colis (7 jours) ; direct = vers l'agence finale.
-SELECT d.id, d.departure_at, d.status, r.name AS route_name, da.id AS to_agency_id, da.name AS to_agency_name,
-       (r.destination_agency_id = @destination_agency_id::uuid) AS is_direct,
+-- Départs qui s'arrêtent à l'agence où se trouve le colis (7 jours), avant d'avoir quitté cet arrêt.
+-- Direct : le car s'arrête ensuite à l'agence de destination ; sinon, correspondance au terminus.
+SELECT d.id, ls.scheduled_at AS departure_at, d.status, r.name AS route_name,
+       CASE WHEN dst.seq IS NOT NULL THEN @destination_agency_id::uuid ELSE r.destination_agency_id END AS to_agency_id,
+       COALESCE(dsp.name, rt.destination_stop_name)::text AS to_agency_name,
+       (dst.seq IS NOT NULL)::bool AS is_direct,
        (SELECT count(*) FROM parcels x WHERE x.departure_id = d.id AND x.status IN ('assigned', 'loaded'))::int AS parcels_count
 FROM departures d
 JOIN routes r ON r.id = d.route_id
-JOIN agencies da ON da.id = r.destination_agency_id
-WHERE d.company_id = @company_id AND r.origin_agency_id = @from_agency_id
-  AND d.status IN ('scheduled', 'boarding') AND d.departure_at > now()
-  AND d.departure_at < now() + interval '7 days'
-ORDER BY (r.destination_agency_id = @destination_agency_id::uuid) DESC, d.departure_at
+JOIN route_terminals rt ON rt.route_id = r.id
+JOIN departure_stops ls ON ls.departure_id = d.id
+JOIN stop_points lsp ON lsp.id = ls.stop_point_id AND lsp.agency_id = @from_agency_id
+LEFT JOIN LATERAL (
+    SELECT x.seq, x.stop_point_id FROM departure_stops x JOIN stop_points sp ON sp.id = x.stop_point_id
+    WHERE x.departure_id = d.id AND x.seq > ls.seq AND sp.agency_id = @destination_agency_id::uuid
+    ORDER BY x.seq LIMIT 1
+) dst ON true
+LEFT JOIN stop_points dsp ON dsp.id = dst.stop_point_id
+WHERE d.company_id = @company_id
+  AND d.status IN ('scheduled', 'boarding', 'departed') AND (d.status <> 'departed' OR ls.seq > 0)
+  AND ls.scheduled_at > now() AND ls.scheduled_at < now() + interval '7 days'
+  AND NOT EXISTS (SELECT 1 FROM departure_stop_visits v WHERE v.departure_id = d.id AND v.seq = ls.seq AND v.departed_at IS NOT NULL)
+ORDER BY (dst.seq IS NOT NULL) DESC, ls.scheduled_at
 LIMIT 30;
+
+-- name: DepartureStopAtAgency :one
+-- Arrêt d'un départ situé à une agence (premier passage).
+SELECT ds.seq FROM departure_stops ds JOIN stop_points sp ON sp.id = ds.stop_point_id
+WHERE ds.departure_id = @departure_id AND sp.agency_id = @agency_id
+ORDER BY ds.seq LIMIT 1;
 
 -- name: GetDepartureRouteAgencies :one
 SELECT d.id, d.company_id, d.status, d.departure_at, r.origin_agency_id, r.destination_agency_id

@@ -12,6 +12,25 @@ import (
 	"github.com/google/uuid"
 )
 
+const departureStopAtAgency = `-- name: DepartureStopAtAgency :one
+SELECT ds.seq FROM departure_stops ds JOIN stop_points sp ON sp.id = ds.stop_point_id
+WHERE ds.departure_id = $1 AND sp.agency_id = $2
+ORDER BY ds.seq LIMIT 1
+`
+
+type DepartureStopAtAgencyParams struct {
+	DepartureID uuid.UUID
+	AgencyID    *uuid.UUID
+}
+
+// Arrêt d'un départ situé à une agence (premier passage).
+func (q *Queries) DepartureStopAtAgency(ctx context.Context, arg DepartureStopAtAgencyParams) (int32, error) {
+	row := q.db.QueryRow(ctx, departureStopAtAgency, arg.DepartureID, arg.AgencyID)
+	var seq int32
+	err := row.Scan(&seq)
+	return seq, err
+}
+
 const findCustomerByPhoneOrEmail = `-- name: FindCustomerByPhoneOrEmail :one
 SELECT id FROM customers
 WHERE status = 'active' AND (phone = $1 OR ($2::text IS NOT NULL AND lower(email) = lower($2::text)))
@@ -1083,10 +1102,11 @@ func (q *Queries) ListDepartureBaggage(ctx context.Context, departureID uuid.UUI
 
 const listDepartureParcels = `-- name: ListDepartureParcels :many
 SELECT p.id, p.tracking_number, p.status, p.recipient_name, p.category, p.weight_kg, p.pieces, p.description,
-       da.name AS destination_agency_name, (p.destination_agency_id = r.destination_agency_id) AS is_final_leg
+       da.name AS destination_agency_name,
+       EXISTS (SELECT 1 FROM departure_stops ds JOIN stop_points sp ON sp.id = ds.stop_point_id
+               WHERE ds.departure_id = d.id AND sp.agency_id = p.destination_agency_id)::bool AS is_final_leg
 FROM parcels p
 JOIN departures d ON d.id = p.departure_id
-JOIN routes r ON r.id = d.route_id
 JOIN agencies da ON da.id = p.destination_agency_id
 WHERE p.departure_id = $1
 ORDER BY p.status, p.tracking_number
@@ -1106,6 +1126,7 @@ type ListDepartureParcelsRow struct {
 }
 
 // Manifeste de chargement d'un départ.
+// is_final_leg : le car s'arrête à l'agence de destination du colis (déchargé là, sans correspondance).
 func (q *Queries) ListDepartureParcels(ctx context.Context, departureID *uuid.UUID) ([]ListDepartureParcelsRow, error) {
 	rows, err := q.db.Query(ctx, listDepartureParcels, departureID)
 	if err != nil {
@@ -1286,23 +1307,34 @@ func (q *Queries) ListIncidents(ctx context.Context, arg ListIncidentsParams) ([
 }
 
 const listParcelDepartureOptions = `-- name: ListParcelDepartureOptions :many
-SELECT d.id, d.departure_at, d.status, r.name AS route_name, da.id AS to_agency_id, da.name AS to_agency_name,
-       (r.destination_agency_id = $1::uuid) AS is_direct,
+SELECT d.id, ls.scheduled_at AS departure_at, d.status, r.name AS route_name,
+       CASE WHEN dst.seq IS NOT NULL THEN $1::uuid ELSE r.destination_agency_id END AS to_agency_id,
+       COALESCE(dsp.name, rt.destination_stop_name)::text AS to_agency_name,
+       (dst.seq IS NOT NULL)::bool AS is_direct,
        (SELECT count(*) FROM parcels x WHERE x.departure_id = d.id AND x.status IN ('assigned', 'loaded'))::int AS parcels_count
 FROM departures d
 JOIN routes r ON r.id = d.route_id
-JOIN agencies da ON da.id = r.destination_agency_id
-WHERE d.company_id = $2 AND r.origin_agency_id = $3
-  AND d.status IN ('scheduled', 'boarding') AND d.departure_at > now()
-  AND d.departure_at < now() + interval '7 days'
-ORDER BY (r.destination_agency_id = $1::uuid) DESC, d.departure_at
+JOIN route_terminals rt ON rt.route_id = r.id
+JOIN departure_stops ls ON ls.departure_id = d.id
+JOIN stop_points lsp ON lsp.id = ls.stop_point_id AND lsp.agency_id = $2
+LEFT JOIN LATERAL (
+    SELECT x.seq, x.stop_point_id FROM departure_stops x JOIN stop_points sp ON sp.id = x.stop_point_id
+    WHERE x.departure_id = d.id AND x.seq > ls.seq AND sp.agency_id = $1::uuid
+    ORDER BY x.seq LIMIT 1
+) dst ON true
+LEFT JOIN stop_points dsp ON dsp.id = dst.stop_point_id
+WHERE d.company_id = $3
+  AND d.status IN ('scheduled', 'boarding', 'departed') AND (d.status <> 'departed' OR ls.seq > 0)
+  AND ls.scheduled_at > now() AND ls.scheduled_at < now() + interval '7 days'
+  AND NOT EXISTS (SELECT 1 FROM departure_stop_visits v WHERE v.departure_id = d.id AND v.seq = ls.seq AND v.departed_at IS NOT NULL)
+ORDER BY (dst.seq IS NOT NULL) DESC, ls.scheduled_at
 LIMIT 30
 `
 
 type ListParcelDepartureOptionsParams struct {
 	DestinationAgencyID uuid.UUID
+	FromAgencyID        *uuid.UUID
 	CompanyID           uuid.UUID
-	FromAgencyID        uuid.UUID
 }
 
 type ListParcelDepartureOptionsRow struct {
@@ -1310,15 +1342,16 @@ type ListParcelDepartureOptionsRow struct {
 	DepartureAt  time.Time
 	Status       string
 	RouteName    string
-	ToAgencyID   uuid.UUID
+	ToAgencyID   interface{}
 	ToAgencyName string
 	IsDirect     bool
 	ParcelsCount int32
 }
 
-// Départs possibles depuis l'agence où se trouve le colis (7 jours) ; direct = vers l'agence finale.
+// Départs qui s'arrêtent à l'agence où se trouve le colis (7 jours), avant d'avoir quitté cet arrêt.
+// Direct : le car s'arrête ensuite à l'agence de destination ; sinon, correspondance au terminus.
 func (q *Queries) ListParcelDepartureOptions(ctx context.Context, arg ListParcelDepartureOptionsParams) ([]ListParcelDepartureOptionsRow, error) {
-	rows, err := q.db.Query(ctx, listParcelDepartureOptions, arg.DestinationAgencyID, arg.CompanyID, arg.FromAgencyID)
+	rows, err := q.db.Query(ctx, listParcelDepartureOptions, arg.DestinationAgencyID, arg.FromAgencyID, arg.CompanyID)
 	if err != nil {
 		return nil, err
 	}

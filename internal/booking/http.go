@@ -14,6 +14,7 @@ import (
 	"busvoyage/internal/platform/apix"
 	"busvoyage/internal/platform/database"
 	"busvoyage/internal/platform/phone"
+	"busvoyage/internal/segment"
 	"busvoyage/internal/store"
 )
 
@@ -147,6 +148,10 @@ func LoadDetail(ctx context.Context, q *store.Queries, id uuid.UUID) (BookingDet
 	out := BookingDetail{Booking: toBooking(b), Seats: []BookedSeat{}, Tickets: []BookingTicket{}, Payments: []BookingPayment{}}
 	d, err := q.GetDepartureDetail(ctx, b.DepartureID)
 	if err != nil {
+		return out, err
+	}
+	// Trajet du voyageur (arrêt de montée → arrêt de descente), pas les extrémités de la ligne.
+	if err := segment.ForBooking(ctx, q, &d, b.ID); err != nil {
 		return out, err
 	}
 	out.Departure = DepartureSummary{ID: d.ID, DepartureAt: d.DepartureAt, ArrivalEta: d.ArrivalEta, Status: d.Status,

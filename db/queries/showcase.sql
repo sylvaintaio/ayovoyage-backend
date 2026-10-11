@@ -20,10 +20,9 @@ SELECT r.id, r.name, r.base_price, r.duration_minutes, r.distance_km, r.included
        (SELECT count(*) FROM departures d WHERE d.route_id = r.id AND d.status IN ('scheduled', 'boarding')
           AND d.departure_at > now() AND d.departure_at < now() + interval '7 days')::int AS departures_next_7_days
 FROM routes r
-JOIN agencies oa ON oa.id = r.origin_agency_id
-JOIN cities oc ON oc.id = oa.city_id
-JOIN agencies da ON da.id = r.destination_agency_id
-JOIN cities dc ON dc.id = da.city_id
+JOIN route_terminals rt ON rt.route_id = r.id
+JOIN cities oc ON oc.id = rt.origin_city_id
+JOIN cities dc ON dc.id = rt.destination_city_id
 JOIN companies co ON co.id = r.company_id
 WHERE r.is_active AND co.status = 'active'
 ORDER BY departures_next_7_days DESC, r.name
@@ -59,17 +58,17 @@ ORDER BY name;
 SELECT d.id, d.departure_at, d.base_price, d.status,
        oc.name AS origin_city, oc.slug AS origin_slug, dc.name AS destination_city, dc.slug AS destination_slug,
        co.name AS company_name,
+       -- Places libres sur tout le trajet (siège libre de bout en bout).
        (l.seat_count
-          - (SELECT count(*) FROM booking_seats bs
-             WHERE bs.departure_id = d.id
-               AND (bs.status = 'sold' OR (bs.status = 'held' AND bs.hold_expires_at > now())))
+          - (SELECT count(DISTINCT g.seat_cell_id) FROM booking_seat_segments g
+             JOIN booking_seats x ON x.id = g.booking_seat_id
+             WHERE g.departure_id = d.id
+               AND (x.status = 'sold' OR (x.status = 'held' AND x.hold_expires_at > now())))
           - (SELECT count(*) FROM departure_blocked_seats x WHERE x.departure_id = d.id))::int AS available_seats
 FROM departures d
-JOIN routes r ON r.id = d.route_id
-JOIN agencies oa ON oa.id = r.origin_agency_id
-JOIN cities oc ON oc.id = oa.city_id
-JOIN agencies da ON da.id = r.destination_agency_id
-JOIN cities dc ON dc.id = da.city_id
+JOIN route_terminals rt ON rt.route_id = d.route_id
+JOIN cities oc ON oc.id = rt.origin_city_id
+JOIN cities dc ON dc.id = rt.destination_city_id
 JOIN companies co ON co.id = d.company_id
 JOIN seat_layouts l ON l.id = d.layout_id
 WHERE d.status IN ('scheduled', 'boarding')

@@ -168,3 +168,17 @@ RETURNING *;
 
 -- name: GetStopVisitByDepartureClientID :one
 SELECT * FROM departure_stop_visits WHERE device_id = @device_id AND departure_client_id = @departure_client_id;
+
+-- name: GetBookingTripView :one
+-- Trajet d une reservation pour l affichage (billet, e-mails, facture) : arrets, villes, heures prevues.
+SELECT bst.scheduled_at AS boarding_at, bsp.name AS boarding_stop, bsp.address AS boarding_address,
+       bsp.agency_id AS boarding_agency_id, bc.name AS boarding_city,
+       alt.scheduled_at AS alighting_at, asp.name AS alighting_stop, asp.agency_id AS alighting_agency_id, ac.name AS alighting_city
+FROM bookings b
+JOIN departure_stops bst ON bst.departure_id = b.departure_id AND bst.seq = b.boarding_seq
+JOIN stop_points bsp ON bsp.id = bst.stop_point_id
+JOIN cities bc ON bc.id = bsp.city_id
+JOIN departure_stops alt ON alt.departure_id = b.departure_id AND alt.seq = b.alighting_seq
+JOIN stop_points asp ON asp.id = alt.stop_point_id
+JOIN cities ac ON ac.id = asp.city_id
+WHERE b.id = $1;
