@@ -162,7 +162,11 @@ WHERE departure_id = @departure_id AND departed_at IS NULL AND arrived_at <= @at
 -- name: DepartStopVisit :one
 UPDATE departure_stop_visits SET departed_at = GREATEST(@departed_at, arrived_at),
                                  departure_lat = sqlc.narg(departure_lat), departure_lng = sqlc.narg(departure_lng),
-                                 departure_client_id = sqlc.narg(departure_client_id)
+                                 departure_client_id = sqlc.narg(departure_client_id),
+                                 -- Motif d'une attente plus longue que prévu, ajouté à la remarque de l'arrêt.
+                                 note = CASE WHEN @departure_note::text = '' THEN note
+                                             WHEN note = '' THEN @departure_note::text
+                                             ELSE note || ' — ' || @departure_note::text END
 WHERE id = @id AND departed_at IS NULL
 RETURNING *;
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -61,7 +62,7 @@ type StopEventInput struct {
 	VisitClientID string    `json:"visit_client_id,omitempty" maxLength:"64" doc:"Départ : client_id de l'arrivée correspondante (absent : dernier arrêt ouvert)"`
 	Seq           *int32    `json:"seq,omitempty" minimum:"0" doc:"Arrivée à un arrêt prévu ; absent : arrêt imprévu (reason obligatoire)"`
 	Reason        string    `json:"reason,omitempty" enum:"planned,police,breakdown,puncture,pause,traffic,other,"`
-	Note          string    `json:"note,omitempty" maxLength:"500"`
+	Note          string    `json:"note,omitempty" maxLength:"500" doc:"Arrêt imprévu : précision ; départ : motif d'une attente plus longue que prévu"`
 	At            time.Time `json:"at" doc:"Heure réelle de l'événement (plafonnée à l'heure du serveur)"`
 	Latitude      *float64  `json:"latitude,omitempty" minimum:"-90" maximum:"90"`
 	Longitude     *float64  `json:"longitude,omitempty" minimum:"-180" maximum:"180"`
@@ -191,7 +192,7 @@ func (h *Handler) registerStopJournal(api huma.API) {
 						}
 						clientID := e.ClientID
 						v, err := q.DepartStopVisit(ctx, store.DepartStopVisitParams{ID: target.ID, DepartedAt: &at,
-							DepartureLat: e.Latitude, DepartureLng: e.Longitude, DepartureClientID: &clientID})
+							DepartureLat: e.Latitude, DepartureLng: e.Longitude, DepartureClientID: &clientID, DepartureNote: strings.TrimSpace(e.Note)})
 						if err != nil {
 							return err
 						}

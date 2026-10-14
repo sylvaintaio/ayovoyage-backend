@@ -139,8 +139,12 @@ func (q *Queries) DeleteRouteStops(ctx context.Context, routeID uuid.UUID) error
 const departStopVisit = `-- name: DepartStopVisit :one
 UPDATE departure_stop_visits SET departed_at = GREATEST($1, arrived_at),
                                  departure_lat = $2, departure_lng = $3,
-                                 departure_client_id = $4
-WHERE id = $5 AND departed_at IS NULL
+                                 departure_client_id = $4,
+                                 -- Motif d'une attente plus longue que prévu, ajouté à la remarque de l'arrêt.
+                                 note = CASE WHEN $5::text = '' THEN note
+                                             WHEN note = '' THEN $5::text
+                                             ELSE note || ' — ' || $5::text END
+WHERE id = $6 AND departed_at IS NULL
 RETURNING id, company_id, departure_id, seq, reason, note, arrived_at, departed_at, arrival_lat, arrival_lng, arrival_accuracy, departure_lat, departure_lng, location_mocked, recorded_by, device_id, client_id, departure_client_id, created_at, updated_at
 `
 
@@ -149,6 +153,7 @@ type DepartStopVisitParams struct {
 	DepartureLat      *float64
 	DepartureLng      *float64
 	DepartureClientID *string
+	DepartureNote     string
 	ID                uuid.UUID
 }
 
@@ -158,6 +163,7 @@ func (q *Queries) DepartStopVisit(ctx context.Context, arg DepartStopVisitParams
 		arg.DepartureLat,
 		arg.DepartureLng,
 		arg.DepartureClientID,
+		arg.DepartureNote,
 		arg.ID,
 	)
 	var i DepartureStopVisit
