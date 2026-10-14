@@ -83,6 +83,15 @@ func (w *WelcomeWorker) Work(ctx context.Context, job *river.Job[jobs.WelcomeArg
 		if err != nil {
 			return err
 		}
+		// Boîte de réception de l'application (et notification si le téléphone est déjà inscrit).
+		name := strings.TrimSpace(c.FullName)
+		hello := "Bienvenue"
+		if name != "" {
+			hello += " " + strings.Fields(name)[0]
+		}
+		n.inboxQuiet(ctx, q, Note{CustomerID: &c.ID, Kind: "welcome", Title: hello + " sur " + n.Brand.Name,
+			Body:     "Cherchez un trajet, choisissez vos places et payez par Mobile Money. Vos billets restent dans l'application, même sans réseau.",
+			DedupKey: "welcome"})
 		if c.Email == nil || *c.Email == "" {
 			return nil // pas d'e-mail : rien à envoyer tant qu'aucun fournisseur SMS n'est branché
 		}
