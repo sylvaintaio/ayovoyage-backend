@@ -79,6 +79,7 @@ ssh -t utilisateur@IP sudo systemctl restart busvoyage-api
 |---|---|
 | `SUPPORT_PHONE`, `SUPPORT_EMAIL`, `SUPPORT_WHATSAPP` | Contacts affichés dans les e-mails |
 | `APP_ENV` | `staging` pour la recette (paiement simulé). `production` à l'ouverture, avec `PAYMENT_PROVIDERS=fedapay`, `FEDAPAY_SECRET_KEY`, `FEDAPAY_WEBHOOK_SECRET` |
+| `PAYMENT_PROVIDERS`, `FEDAPAY_*` | Repris de `backend/.env` par `make-overrides.py`. Recette : `fedapay,mock` (FedaPay proposé en premier, paiement simulé gardé pour les tests) et `FEDAPAY_ENV=sandbox`. Webhook FedaPay : `https://<domaine API>/v1/webhooks/payments/fedapay`, vérification SSL active ; sa clé secrète va dans `FEDAPAY_WEBHOOK_SECRET`. |
 | `SMS_SENDER_ID` | Vide tant que `AYOVOYAGE` n'est pas approuvé par Africa's Talking |
 | `OTP_CHANNELS` | `email` ; `email,sms` une fois les SMS validés |
 
