@@ -96,7 +96,13 @@ func (s *Service) Initiate(ctx context.Context, p auth.Principal, bookingID uuid
 // InitiateForStaff : un agent lance le paiement en ligne d'une réservation de sa compagnie
 // (voyageur au guichet ou au téléphone, qui confirme sur son propre téléphone).
 func (s *Service) InitiateForStaff(ctx context.Context, p auth.Principal, bookingID uuid.UUID, providerName, method, payerPhone, idemKey string) (Payment, error) {
-	owns := func(b store.Booking) bool { return b.CompanyID == p.CompanyID }
+	owns := func(b store.Booking) bool {
+		// Contrôleur : seulement ses ventes à bord.
+		if p.Role == auth.RoleBoardingAgent {
+			return b.CompanyID == p.CompanyID && b.CreatedByStaffID != nil && *b.CreatedByStaffID == p.ID
+		}
+		return b.CompanyID == p.CompanyID
+	}
 	staffID := p.ID
 	return s.initiate(ctx, p.Tenant(), owns, "staff:"+p.ID.String()+":", &staffID, bookingID, providerName, method, payerPhone, idemKey)
 }
@@ -268,8 +274,8 @@ func (s *Service) Register(api huma.API) {
 		})
 
 	huma.Register(api, apix.WithDescription(apix.Op("create-staff-payment", http.MethodPost, "/v1/admin/bookings/{id}/payments", tagPayments,
-		"Lancer le paiement en ligne d'une réservation (guichet, téléphone)", apix.Staff,
-		auth.RoleCompanyAdmin, auth.RoleAgencyManager, auth.RoleCashier),
+		"Lancer le paiement en ligne d'une réservation (guichet, téléphone, vente à bord)", apix.Staff,
+		auth.RoleCompanyAdmin, auth.RoleAgencyManager, auth.RoleCashier, auth.RoleBoardingAgent),
 		"L'agent saisit le numéro Mobile Money du voyageur sur la page du fournisseur (`checkout_url`, ouverte sur son écran) : "+
 			"le voyageur confirme avec son code sur son propre téléphone, même un téléphone simple. Confirmation par webhook ; "+
 			"suivre le statut avec `GET /v1/admin/payments/{id}`."),
@@ -305,7 +311,7 @@ func (s *Service) Register(api huma.API) {
 
 	huma.Register(api, apix.Op("get-staff-payment", http.MethodGet, "/v1/admin/payments/{id}", tagPayments,
 		"Statut d'un paiement (vérifié auprès du fournisseur)", apix.Staff,
-		auth.RoleCompanyAdmin, auth.RoleAgencyManager, auth.RoleCashier, auth.RoleFinance),
+		auth.RoleCompanyAdmin, auth.RoleAgencyManager, auth.RoleCashier, auth.RoleFinance, auth.RoleBoardingAgent),
 		func(ctx context.Context, in *struct {
 			ID uuid.UUID `path:"id"`
 		}) (*struct{ Body Payment }, error) {

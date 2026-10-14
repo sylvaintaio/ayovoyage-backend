@@ -36,12 +36,13 @@ type OnboardSaleInput struct {
 	SoldAt       time.Time          `json:"sold_at" doc:"Heure réelle de la vente (plafonnée à l'heure du serveur)"`
 	Offline      bool               `json:"offline,omitempty" doc:"Vente faite sans réseau, sur les places du quota"`
 	Collected    int64              `json:"collected,omitempty" minimum:"0" doc:"Hors connexion : montant encaissé par le contrôleur"`
+	Payment      string             `json:"payment,omitempty" enum:"cash,online" default:"cash" doc:"online : Mobile Money du voyageur (FedaPay), avec réseau ; le contrôleur lance ensuite le paiement"`
 }
 
 // OnboardSaleResult : issue d'une vente à bord.
 type OnboardSaleResult struct {
 	ClientSaleID string         `json:"client_sale_id"`
-	Result       string         `json:"result" enum:"recorded,duplicate,issue"`
+	Result       string         `json:"result" enum:"recorded,duplicate,issue,awaiting_payment"`
 	Message      string         `json:"message"`
 	Booking      *BookingDetail `json:"booking,omitempty"`
 	// Hors connexion : le serveur a dû changer de siège, ou le prix diffère de celui encaissé.
@@ -155,6 +156,22 @@ func (s *Service) SellOnboard(ctx context.Context, tx pgx.Tx, q *store.Queries, 
 		return res, err
 	}
 
+	// Mobile Money du voyageur : réservation gardée le temps du paiement, billets émis à la confirmation.
+	if in.Payment == "online" {
+		if in.Offline {
+			return res, huma.Error422UnprocessableEntity("Le paiement Mobile Money demande du réseau : encaissez en espèces")
+		}
+		if err := q.SetBookingClientSale(ctx, store.SetBookingClientSaleParams{ID: b.ID, ClientSaleID: &in.ClientSaleID}); err != nil {
+			return res, err
+		}
+		detail, err := LoadDetail(ctx, q, b.ID)
+		if err != nil {
+			return res, err
+		}
+		res.Result, res.Message, res.Booking = "awaiting_payment", "En attente du paiement Mobile Money", &detail
+		return res, nil
+	}
+
 	if b.TotalAmount > 0 {
 		pay, err := q.InsertPayment(ctx, store.InsertPaymentParams{
 			CompanyID: b.CompanyID, BookingID: &b.ID, Provider: "cash", Method: "cash", Amount: b.TotalAmount,
@@ -181,7 +198,7 @@ func (s *Service) SellOnboard(ctx context.Context, tx pgx.Tx, q *store.Queries, 
 	// Le voyageur est déjà dans le car : billets embarqués à l'heure de la vente.
 	stopSeq := int32(*boarding)
 	for _, t := range detail.Tickets {
-		if t.Status != "valid" {
+		if t.Status == "cancelled" {
 			continue
 		}
 		if err := q.MarkTicketUsed(ctx, store.MarkTicketUsedParams{ID: t.ID, BoardedAt: &soldAt, BoardedBy: &staffID}); err != nil {

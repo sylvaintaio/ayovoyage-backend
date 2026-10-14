@@ -292,6 +292,7 @@ func (h *Handler) ChangeStatus(ctx context.Context, p auth.Principal, id uuid.UU
 
 func (h *Handler) Register(api huma.API) {
 	h.registerOnboard(api)
+	h.registerTracking(api)
 	huma.Register(api, apix.WithDescription(apix.Op("search-departures", http.MethodGet, "/v1/public/departures/search", tagPublic,
 		"Rechercher des départs", apix.Public),
 		"La date est interprétée à l'heure locale (Afrique de l'Ouest, UTC+1). Les départs dont la vente est close sont exclus."),

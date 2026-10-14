@@ -3948,6 +3948,13 @@ components:
           maxItems: 10
           minItems: 1
           type: array
+        payment:
+          default: cash
+          description: "online : Mobile Money du voyageur (FedaPay), avec réseau ; le contrôleur lance ensuite le paiement"
+          enum:
+            - cash
+            - online
+          type: string
         sold_at:
           description: Heure réelle de la vente (plafonnée à l'heure du serveur)
           format: date-time
@@ -3976,6 +3983,7 @@ components:
             - recorded
             - duplicate
             - issue
+            - awaiting_payment
           type: string
         seat_changed:
           type: boolean
@@ -7377,6 +7385,44 @@ components:
         - discount_percent
         - perks
       type: object
+    TripProgress:
+      additionalProperties: false
+      properties:
+        alighting_seq:
+          description: Arrêt de descente du voyageur
+          format: int32
+          type: integer
+        boarding_seq:
+          description: Arrêt de montée du voyageur
+          format: int32
+          type: integer
+        delay_minutes:
+          description: "Retard constaté au dernier départ d'arrêt (0 : à l'heure ou pas encore parti)"
+          format: int64
+          type: integer
+        departure_status:
+          type: string
+        stops:
+          items:
+            $ref: "#/components/schemas/DepartureStop"
+          type: array
+        updated_at:
+          format: date-time
+          type: string
+        visits:
+          description: "Arrêts déclarés par le contrôleur, heures réelles (arrêts imprévus : motif)"
+          items:
+            $ref: "#/components/schemas/StopVisitView"
+          type: array
+      required:
+        - departure_status
+        - boarding_seq
+        - alighting_seq
+        - stops
+        - visits
+        - delay_minutes
+        - updated_at
+      type: object
     Unassign-parcelRequest:
       additionalProperties: false
       properties:
@@ -8708,7 +8754,7 @@ paths:
       description: |-
         L'agent saisit le numéro Mobile Money du voyageur sur la page du fournisseur (`checkout_url`, ouverte sur son écran) : le voyageur confirme avec son code sur son propre téléphone, même un téléphone simple. Confirmation par webhook ; suivre le statut avec `GET /v1/admin/payments/{id}`.
 
-        Réservé au **personnel** — rôles : `company_admin`, `agency_manager`, `cashier`.
+        Réservé au **personnel** — rôles : `company_admin`, `agency_manager`, `cashier`, `boarding_agent`.
       operationId: create-staff-payment
       parameters:
         - in: path
@@ -8763,7 +8809,7 @@ paths:
       security:
         - bearerAuth: []
         - cookieAuth: []
-      summary: Lancer le paiement en ligne d'une réservation (guichet, téléphone)
+      summary: Lancer le paiement en ligne d'une réservation (guichet, téléphone, vente à bord)
       tags:
         - Paiements
   /v1/admin/bookings/{id}/policy:
@@ -11958,7 +12004,7 @@ paths:
         - Admin — Réservations
   /v1/admin/payments/{id}:
     get:
-      description: "Réservé au **personnel** — rôles : `company_admin`, `agency_manager`, `cashier`, `finance`."
+      description: "Réservé au **personnel** — rôles : `company_admin`, `agency_manager`, `cashier`, `finance`, `boarding_agent`."
       operationId: get-staff-payment
       parameters:
         - in: path
@@ -15623,6 +15669,56 @@ paths:
       summary: Conditions d'annulation et de modification
       tags:
         - Réservations
+  /v1/bookings/{id}/trip:
+    get:
+      description: |-
+        Arrêts du départ avec heures prévues, et arrêts réellement effectués déclarés par le contrôleur (heures d'arrivée et de départ, arrêts imprévus avec leur motif). Mis à jour en direct.
+
+        Réservé aux **clients** connectés.
+      operationId: get-my-booking-trip
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TripProgress"
+          description: OK
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unauthorized
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Forbidden
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unprocessable Entity
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Internal Server Error
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      summary: Suivi du voyage (arrêts et retards)
+      tags:
+        - Public — Recherche de départs
   /v1/me:
     delete:
       description: |-

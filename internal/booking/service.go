@@ -587,6 +587,20 @@ func (s *Service) ConfirmPaid(ctx context.Context, tx pgx.Tx, q *store.Queries, 
 	if err := s.Tickets.IssueForBooking(ctx, q, b, seats); err != nil {
 		return ConfirmResult{}, err
 	}
+	// Vente à bord : le voyageur est déjà dans le car, billets embarqués dès la confirmation
+	// (utile quand le paiement Mobile Money est confirmé plus tard par le fournisseur).
+	if b.Channel == "onboard" {
+		tickets, err := q.ListBookingTickets(ctx, b.ID)
+		if err != nil {
+			return ConfirmResult{}, err
+		}
+		now := time.Now()
+		for _, t := range tickets {
+			if err := q.MarkTicketUsed(ctx, store.MarkTicketUsedParams{ID: t.ID, BoardedAt: &now, BoardedBy: b.CreatedByStaffID}); err != nil {
+				return ConfirmResult{}, err
+			}
+		}
+	}
 	if err := s.Queue.InsertTx(ctx, tx, jobs.BookingConfirmedArgs{BookingID: b.ID}); err != nil {
 		return ConfirmResult{}, err
 	}
