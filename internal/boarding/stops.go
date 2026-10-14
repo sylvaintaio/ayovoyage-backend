@@ -12,6 +12,7 @@ import (
 
 	"busvoyage/internal/auth"
 	"busvoyage/internal/departure"
+	"busvoyage/internal/jobs"
 	"busvoyage/internal/platform/apix"
 	"busvoyage/internal/platform/database"
 	"busvoyage/internal/store"
@@ -92,7 +93,7 @@ func (h *Handler) registerStopJournal(api huma.API) {
 			sort.SliceStable(events, func(i, j int) bool { return events[i].At.Before(events[j].At) })
 			out := &struct{ Body []StopEventResult }{Body: []StopEventResult{}}
 			var nextStatus string
-			err := h.DB.Tx(ctx, p.Tenant(), func(_ pgx.Tx, q *store.Queries) error {
+			err := h.DB.Tx(ctx, p.Tenant(), func(tx pgx.Tx, q *store.Queries) error {
 				dev, err := h.device(ctx, q, p, in.DeviceID)
 				if err != nil {
 					return err
@@ -198,6 +199,13 @@ func (h *Handler) registerStopJournal(api huma.API) {
 						res.Result, res.Visit = "recorded", &visit
 						if v.Seq != nil && *v.Seq == 0 {
 							nextStatus = "departed"
+						}
+						// Voyageurs qui attendent plus loin : prévenus (notification « votre car arrive »).
+						if v.Seq != nil && *v.Seq < last && h.Queue != nil {
+							if err := h.Queue.InsertTx(ctx, tx, jobs.DepartureProgressArgs{DepartureID: d.ID, Seq: int(*v.Seq),
+								DepartedAt: at}); err != nil {
+								return err
+							}
 						}
 						if ag, ok := agencyAtSeq(agencyAt, v.Seq); ok && parcels != nil {
 							if err := parcels.OnStopDeparture(ctx, q, d.ID, ag); err != nil {

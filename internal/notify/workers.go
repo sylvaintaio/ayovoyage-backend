@@ -1,6 +1,7 @@
 package notify
 
 import (
+	"busvoyage/internal/push"
 	"context"
 	"errors"
 	"fmt"
@@ -20,10 +21,12 @@ import (
 )
 
 type Notifier struct {
-	Brand  Brand
-	DB     *database.DB
-	SMS    SMSSender
-	Email  EmailSender
+	Brand Brand
+	DB    *database.DB
+	SMS   SMSSender
+	Email EmailSender
+	// Push : notifications sur les téléphones (nil : désactivé).
+	Push   push.Sender
 	WebURL string
 	// BookingInvoices : factures PDF à joindre à l'e-mail de confirmation
 	// (fourni par le package invoice ; nil = aucune pièce jointe).
@@ -138,6 +141,15 @@ func (w *BookingConfirmedWorker) Work(ctx context.Context, job *river.Job[jobs.B
 				strings.Join(seats, ", "), link)
 		}
 		n.log(ctx, q, b, "sms", template, b.ContactPhone, "", sms, n.SMS.SendSMS(ctx, b.ContactPhone, sms))
+		title := "Réservation confirmée"
+		if template == "booking_changed" {
+			title = "Voyage modifié"
+		}
+		n.inboxQuiet(ctx, q, Note{CustomerID: b.CustomerID, CompanyID: &b.CompanyID, Kind: template, Title: title,
+			Body: fmt.Sprintf("%s → %s le %s, siège(s) %s. Réf. %s", d.OriginCity, d.DestinationCity, formatDate(d.DepartureAt),
+				strings.Join(seats, ", "), b.Reference),
+			Link: "/reservations/" + b.ID.String(), Data: map[string]string{"booking_id": b.ID.String()},
+			DedupKey: template + ":" + b.ID.String()})
 
 		if b.ContactEmail != nil && *b.ContactEmail != "" {
 			brand := n.Brand
@@ -187,6 +199,9 @@ func (w *BookingCancelledWorker) Work(ctx context.Context, job *river.Job[jobs.B
 		}
 		msg := fmt.Sprintf("Votre réservation %s a été annulée. %s", b.Reference, b.CancelReason)
 		n.log(ctx, q, b, "sms", "booking_cancelled", b.ContactPhone, "", msg, n.SMS.SendSMS(ctx, b.ContactPhone, msg))
+		n.inboxQuiet(ctx, q, Note{CustomerID: b.CustomerID, CompanyID: &b.CompanyID, Kind: "booking_cancelled",
+			Title: "Réservation annulée", Body: msg, Link: "/reservations/" + b.ID.String(),
+			Data: map[string]string{"booking_id": b.ID.String()}, DedupKey: "booking_cancelled:" + b.ID.String()})
 		return nil
 	})
 }
@@ -206,6 +221,16 @@ var departureMessages = map[string]string{
 	"rescheduled": "Changement d'horaire : votre bus %s → %s passera désormais à %s le %s.",
 }
 
+var departureTitles = map[string]string{
+	"boarding":    "Embarquement ouvert",
+	"departed":    "Votre car est parti",
+	"arrived":     "Arrivée",
+	"cancelled":   "Départ annulé",
+	"rescheduled": "Changement d'horaire",
+}
+
+var staffStatus = map[string]string{"cancelled": "départ annulé", "rescheduled": "nouvel horaire"}
+
 func (w *DepartureStatusWorker) Work(ctx context.Context, job *river.Job[jobs.DepartureStatusArgs]) error {
 	n := w.N
 	tpl, ok := departureMessages[job.Args.Status]
@@ -223,16 +248,35 @@ func (w *DepartureStatusWorker) Work(ctx context.Context, job *river.Job[jobs.De
 		if err != nil {
 			return err
 		}
+		// Équipage : départ annulé ou déplacé.
+		if job.Args.Status == "cancelled" || job.Args.Status == "rescheduled" {
+			crew, err := q.ListDepartureStaffIDs(ctx, d.ID)
+			if err != nil {
+				return err
+			}
+			for _, c := range crew {
+				staffID, companyID := c.StaffID, d.CompanyID
+				n.inboxQuiet(ctx, q, Note{StaffID: &staffID, CompanyID: &companyID, Kind: "crew_departure_" + job.Args.Status,
+					Title: departureTitles[job.Args.Status],
+					Body:  fmt.Sprintf("%s du %s : %s.", d.RouteName, formatDate(d.DepartureAt), staffStatus[job.Args.Status]),
+					Link:  "/departs/" + d.ID.String(), Data: map[string]string{"departure_id": d.ID.String()},
+					DedupKey: fmt.Sprintf("crew_%s:%s:%d", job.Args.Status, d.ID, d.DepartureAt.Unix())})
+			}
+		}
 		for _, c := range contacts {
 			msg := fmt.Sprintf(tpl, d.OriginCity, d.DestinationCity, formatDate(d.DepartureAt))
 			if job.Args.Status == "rescheduled" { // nouvelle heure de passage à l'arrêt de montée du voyageur
 				msg = fmt.Sprintf(tpl, d.OriginCity, d.DestinationCity, c.BoardingStop, formatDate(c.BoardingAt))
 			}
+			companyID := d.CompanyID
+			n.inboxQuiet(ctx, q, Note{CustomerID: c.CustomerID, CompanyID: &companyID, Kind: "departure_" + job.Args.Status,
+				Title: departureTitles[job.Args.Status], Body: msg, Link: "/reservations",
+				Data:     map[string]string{"departure_id": d.ID.String()},
+				DedupKey: fmt.Sprintf("departure_%s:%s:%d", job.Args.Status, d.ID, c.BoardingAt.Unix())})
 			err := n.SMS.SendSMS(ctx, c.ContactPhone, msg)
 			if errors.Is(err, ErrNoRecipient) {
 				continue
 			}
-			companyID := d.CompanyID
 			status, errMsg := DeliveryStatus(n.SMS, err)
 			_ = q.InsertNotification(ctx, store.InsertNotificationParams{
 				CompanyID: &companyID, CustomerID: c.CustomerID, Channel: "sms",
@@ -343,6 +387,12 @@ func (n *Notifier) remind(ctx context.Context, q *store.Queries, id uuid.UUID, s
 			strings.Join(seats, ", "), b.Reference, link)
 	}
 	n.log(ctx, q, b, "sms", template, b.ContactPhone, "", sms, n.SMS.SendSMS(ctx, b.ContactPhone, sms))
+	n.inboxQuiet(ctx, q, Note{CustomerID: b.CustomerID, CompanyID: &b.CompanyID, Kind: template,
+		Title: "Rappel de voyage",
+		Body: fmt.Sprintf("Départ %s %s à %s (%s). Venez 30 min avant. Sièges %s, réf. %s.", strings.ReplaceAll(when, "’", "'"),
+			d.OriginCity, dep.Format("15h04"), d.OriginAgencyName, strings.Join(seats, ", "), b.Reference),
+		Link: "/reservations/" + b.ID.String(), Data: map[string]string{"booking_id": b.ID.String()},
+		DedupKey: template + ":" + b.ID.String()})
 	if b.ContactEmail != nil && *b.ContactEmail != "" {
 		brand := n.Brand
 		brand.Name = d.CompanyName
@@ -372,7 +422,11 @@ func (w *PurgeWorker) Work(ctx context.Context, _ *river.Job[jobs.PurgeDataArgs]
 		if err != nil {
 			return err
 		}
-		slog.Info("purge des données expirées", "codes", otps, "sessions", tokens)
+		inbox, err := q.PurgeOldInbox(ctx)
+		if err != nil {
+			return err
+		}
+		slog.Info("purge des données expirées", "codes", otps, "sessions", tokens, "notifications", inbox)
 		return nil
 	})
 }

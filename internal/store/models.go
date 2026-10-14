@@ -349,6 +349,23 @@ type Device struct {
 	CreatedAt  time.Time
 }
 
+type InboxMessage struct {
+	ID           uuid.UUID
+	CustomerID   *uuid.UUID
+	StaffID      *uuid.UUID
+	CompanyID    *uuid.UUID
+	Kind         string
+	Title        string
+	Body         string
+	Link         string
+	Data         json.RawMessage
+	DedupKey     *string
+	ReadAt       *time.Time
+	PushedAt     *time.Time
+	PushAttempts int32
+	CreatedAt    time.Time
+}
+
 type Incident struct {
 	ID                 uuid.UUID
 	CompanyID          uuid.UUID
@@ -721,6 +738,18 @@ type PromoRedemption struct {
 	Status      string
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+}
+
+type PushDevice struct {
+	ID         uuid.UUID
+	Token      string
+	Platform   string
+	App        string
+	CustomerID *uuid.UUID
+	StaffID    *uuid.UUID
+	CompanyID  *uuid.UUID
+	CreatedAt  time.Time
+	LastSeenAt time.Time
 }
 
 type Referral struct {

@@ -55,6 +55,8 @@ type Config struct {
 	FedaPaySecretKey     string
 	FedaPayWebhookSecret string
 	FedaPayEnv           string // sandbox | live
+	// FirebaseCredentialsFile : clé de compte de service Firebase (notifications push). Vide : notifications simulées (journal).
+	FirebaseCredentialsFile string
 
 	SMS SMSConfig
 
@@ -97,31 +99,32 @@ func (c Config) AllowsSimulation() bool { return c.Env == "development" || c.Env
 
 func Load() (Config, error) {
 	c := Config{
-		Env:                  env("APP_ENV", "development"),
-		HTTPAddr:             env("HTTP_ADDR", ":8080"),
-		PublicAPIURL:         strings.TrimRight(env("PUBLIC_API_URL", "http://localhost:8080"), "/"),
-		PublicWebURL:         strings.TrimRight(env("PUBLIC_WEB_URL", "http://localhost:4200"), "/"),
-		DatabaseURL:          os.Getenv("DATABASE_URL"),
-		MigrationDatabaseURL: os.Getenv("MIGRATION_DATABASE_URL"),
-		AutoMigrate:          envBool("AUTO_MIGRATE", false),
-		CORSOrigins:          envList("CORS_ORIGINS", "http://localhost:4200"),
-		TrustProxy:           envBool("TRUST_PROXY", false),
-		CookieDomain:         os.Getenv("COOKIE_DOMAIN"),
-		CookiePathPrefix:     strings.TrimRight(os.Getenv("COOKIE_PATH_PREFIX"), "/"),
-		EnableDocs:           envBool("ENABLE_DOCS", true),
-		AccessTokenTTL:       envDuration("ACCESS_TOKEN_TTL", 15*time.Minute),
-		RefreshTokenTTL:      envDuration("REFRESH_TOKEN_TTL", 30*24*time.Hour),
-		TicketSigningKeyID:   env("TICKET_SIGNING_KEY_ID", "k1"),
-		DefaultCountryCode:   env("DEFAULT_COUNTRY_CODE", "229"),
-		BrandName:            env("BRAND_NAME", DefaultBrandName),
-		SupportPhone:         os.Getenv("SUPPORT_PHONE"),
-		SupportEmail:         os.Getenv("SUPPORT_EMAIL"),
-		SupportWhatsApp:      os.Getenv("SUPPORT_WHATSAPP"),
-		OTPChannels:          envList("OTP_CHANNELS", "email"),
-		PaymentProviders:     envList("PAYMENT_PROVIDERS", "mock"),
-		FedaPaySecretKey:     os.Getenv("FEDAPAY_SECRET_KEY"),
-		FedaPayWebhookSecret: os.Getenv("FEDAPAY_WEBHOOK_SECRET"),
-		FedaPayEnv:           env("FEDAPAY_ENV", "sandbox"),
+		Env:                     env("APP_ENV", "development"),
+		HTTPAddr:                env("HTTP_ADDR", ":8080"),
+		PublicAPIURL:            strings.TrimRight(env("PUBLIC_API_URL", "http://localhost:8080"), "/"),
+		PublicWebURL:            strings.TrimRight(env("PUBLIC_WEB_URL", "http://localhost:4200"), "/"),
+		DatabaseURL:             os.Getenv("DATABASE_URL"),
+		MigrationDatabaseURL:    os.Getenv("MIGRATION_DATABASE_URL"),
+		AutoMigrate:             envBool("AUTO_MIGRATE", false),
+		CORSOrigins:             envList("CORS_ORIGINS", "http://localhost:4200"),
+		TrustProxy:              envBool("TRUST_PROXY", false),
+		CookieDomain:            os.Getenv("COOKIE_DOMAIN"),
+		CookiePathPrefix:        strings.TrimRight(os.Getenv("COOKIE_PATH_PREFIX"), "/"),
+		EnableDocs:              envBool("ENABLE_DOCS", true),
+		AccessTokenTTL:          envDuration("ACCESS_TOKEN_TTL", 15*time.Minute),
+		RefreshTokenTTL:         envDuration("REFRESH_TOKEN_TTL", 30*24*time.Hour),
+		TicketSigningKeyID:      env("TICKET_SIGNING_KEY_ID", "k1"),
+		DefaultCountryCode:      env("DEFAULT_COUNTRY_CODE", "229"),
+		BrandName:               env("BRAND_NAME", DefaultBrandName),
+		SupportPhone:            os.Getenv("SUPPORT_PHONE"),
+		SupportEmail:            os.Getenv("SUPPORT_EMAIL"),
+		SupportWhatsApp:         os.Getenv("SUPPORT_WHATSAPP"),
+		OTPChannels:             envList("OTP_CHANNELS", "email"),
+		PaymentProviders:        envList("PAYMENT_PROVIDERS", "mock"),
+		FedaPaySecretKey:        os.Getenv("FEDAPAY_SECRET_KEY"),
+		FedaPayWebhookSecret:    os.Getenv("FEDAPAY_WEBHOOK_SECRET"),
+		FedaPayEnv:              env("FEDAPAY_ENV", "sandbox"),
+		FirebaseCredentialsFile: os.Getenv("FIREBASE_CREDENTIALS_FILE"),
 		SMS: SMSConfig{
 			Driver:          env("SMS_DRIVER", "log"),
 			SenderID:        os.Getenv("SMS_SENDER_ID"),

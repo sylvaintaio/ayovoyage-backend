@@ -56,6 +56,24 @@ def main():
             m = re.match(r'^([A-Z0-9_]+)=(.*)$', line.rstrip('\n'))
             if m and KEYS.match(m.group(1)):
                 values[m.group(1)] = parse_value(m.group(2))
+    # Clé Firebase : le fichier est envoyé à part (deploy/out, jamais versionné) et installé
+    # sur le serveur dans /etc/busvoyage, lisible par l'API seulement.
+    firebase = None
+    with open(SOURCE, encoding='utf-8') as f:
+        for line in f:
+            m = re.match(r'^FIREBASE_CREDENTIALS_FILE=(.*)$', line.rstrip('\n'))
+            if m:
+                firebase = os.path.expanduser(parse_value(m.group(1)))
+    if firebase:
+        if not os.path.isfile(firebase):
+            sys.exit(f'FIREBASE_CREDENTIALS_FILE introuvable : {firebase}')
+        os.makedirs(os.path.join(BACKEND, 'deploy', 'out'), exist_ok=True)
+        dest = os.path.join(BACKEND, 'deploy', 'out', 'firebase-service-account.json')
+        fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, 'wb') as out, open(firebase, 'rb') as src:
+            out.write(src.read())
+        values['FIREBASE_CREDENTIALS_FILE'] = '/etc/busvoyage/firebase-service-account.json'
+
     # En production, le pilote « log » des e-mails n'a pas de sens.
     if values.get('EMAIL_DRIVER') == 'log':
         values.pop('EMAIL_DRIVER')

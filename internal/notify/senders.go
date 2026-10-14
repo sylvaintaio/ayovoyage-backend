@@ -2,6 +2,7 @@
 package notify
 
 import (
+	"busvoyage/internal/push"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
@@ -264,7 +265,7 @@ func isLogSender(sender any) bool {
 		sender = w.Unwrap()
 	}
 	switch sender.(type) {
-	case LogEmail, *LogEmail, LogSMS, *LogSMS:
+	case LogEmail, *LogEmail, LogSMS, *LogSMS, push.Log, *push.Log:
 		return true
 	}
 	return false

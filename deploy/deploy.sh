@@ -20,7 +20,7 @@ if [ "${1:-}" = "--setup" ]; then
   echo "→ Préparation du serveur (mot de passe sudo demandé)"
   ssh -t "$VPS" "cd ~/busvoyage-deploy && sudo DOMAIN='${DOMAIN:-}' PORT='$PORT' CERTBOT_EMAIL='${CERTBOT_EMAIL:-}' ./setup-server.sh; rm -rf ~/busvoyage-deploy/out"
   # Le fichier de valeurs locales a été appliqué : inutile de le garder sur cet ordinateur.
-  rm -f "$BACKEND/deploy/out/api.env.overrides"
+  rm -f "$BACKEND/deploy/out/api.env.overrides" "$BACKEND/deploy/out/firebase-service-account.json"
   echo "Serveur prêt. Lancer maintenant : VPS=$VPS ./deploy/deploy.sh"
   exit 0
 fi

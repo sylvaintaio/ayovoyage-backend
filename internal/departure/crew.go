@@ -1,7 +1,9 @@
 package departure
 
 import (
+	"busvoyage/internal/jobs"
 	"context"
+	"github.com/jackc/pgx/v5"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -158,4 +160,38 @@ func LoadVisits(ctx context.Context, q *store.Queries, departureID uuid.UUID) ([
 			DepartedAt: v.DepartedAt, Latitude: v.ArrivalLat, Longitude: v.ArrivalLng, Accuracy: v.ArrivalAccuracy, Mocked: v.LocationMocked})
 	}
 	return out, nil
+}
+
+// staffSet : personnes déjà affectées à un départ (contrôleur, chauffeur, autres membres).
+func staffSet(ctx context.Context, q *store.Queries, departureID uuid.UUID) (map[uuid.UUID]bool, error) {
+	rows, err := q.ListDepartureStaffIDs(ctx, departureID)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[uuid.UUID]bool, len(rows))
+	for _, r := range rows {
+		out[r.StaffID] = true
+	}
+	return out, nil
+}
+
+// notifyNewCrew : les personnes ajoutées à l'équipage (absentes de before) reçoivent une notification.
+func (h *Handler) notifyNewCrew(ctx context.Context, tx pgx.Tx, q *store.Queries, departureID uuid.UUID, before map[uuid.UUID]bool) error {
+	if h.Queue == nil {
+		return nil
+	}
+	now, err := staffSet(ctx, q, departureID)
+	if err != nil {
+		return err
+	}
+	var added []uuid.UUID
+	for id := range now {
+		if !before[id] {
+			added = append(added, id)
+		}
+	}
+	if len(added) == 0 {
+		return nil
+	}
+	return h.Queue.InsertTx(ctx, tx, jobs.CrewAssignedArgs{DepartureID: departureID, StaffIDs: added})
 }

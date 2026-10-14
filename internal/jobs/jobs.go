@@ -6,6 +6,7 @@ package jobs
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -17,6 +18,28 @@ type BookingConfirmedArgs struct {
 }
 
 func (BookingConfirmedArgs) Kind() string { return "notify_booking_confirmed" }
+
+// SendPushArgs : envoi des notifications en attente sur les téléphones (tâche périodique).
+type SendPushArgs struct{}
+
+func (SendPushArgs) Kind() string { return "send_push" }
+
+// DepartureProgressArgs : le car a quitté un arrêt prévu ; les voyageurs qui attendent plus loin sont prévenus.
+type DepartureProgressArgs struct {
+	DepartureID uuid.UUID `json:"departure_id"`
+	Seq         int       `json:"seq"`
+	DepartedAt  time.Time `json:"departed_at"`
+}
+
+func (DepartureProgressArgs) Kind() string { return "notify_departure_progress" }
+
+// CrewAssignedArgs : membres d'équipage nouvellement affectés à un départ.
+type CrewAssignedArgs struct {
+	DepartureID uuid.UUID   `json:"departure_id"`
+	StaffIDs    []uuid.UUID `json:"staff_ids"`
+}
+
+func (CrewAssignedArgs) Kind() string { return "notify_crew_assigned" }
 
 // WelcomeArgs : e-mail de bienvenue après la création d'un compte client.
 type WelcomeArgs struct {

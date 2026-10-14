@@ -471,7 +471,7 @@ func (h *Handler) registerAdmin(api huma.API) {
 				Status int
 				Body   AdminDeparture
 			}{Status: http.StatusCreated}
-			err := h.DB.Tx(ctx, p.Tenant(), func(_ pgx.Tx, q *store.Queries) error {
+			err := h.DB.Tx(ctx, p.Tenant(), func(tx pgx.Tx, q *store.Queries) error {
 				route, err := q.GetRoute(ctx, store.GetRouteParams{ID: b.RouteID, CompanyID: p.CompanyID})
 				if database.IsNotFound(err) {
 					return huma.Error422UnprocessableEntity("Ligne inconnue")
@@ -523,6 +523,9 @@ func (h *Handler) registerAdmin(api huma.API) {
 					return err
 				}
 				if err := saveCrew(ctx, q, p.CompanyID, d.ID, b.Crew); err != nil {
+					return err
+				}
+				if err := h.notifyNewCrew(ctx, tx, q, d.ID, nil); err != nil {
 					return err
 				}
 				if _, err := applyDefaultQuota(ctx, q, d, &p.ID); err != nil {
@@ -768,6 +771,10 @@ func (h *Handler) registerAdmin(api huma.API) {
 				if overlap {
 					return huma.Error409Conflict("Le bus est déjà affecté à un départ sur ce nouveau créneau")
 				}
+				crewBefore, err := staffSet(ctx, q, before.ID)
+				if err != nil {
+					return err
+				}
 				d, err := q.UpdateDeparture(ctx, store.UpdateDepartureParams{ID: in.ID, CompanyID: p.CompanyID,
 					DepartureAt: b.DepartureAt, ArrivalEta: arrival, BasePrice: b.BasePrice,
 					DriverID: b.DriverID, AgentID: b.AgentID, Notes: b.Notes})
@@ -775,6 +782,9 @@ func (h *Handler) registerAdmin(api huma.API) {
 					return err
 				}
 				if err := saveCrew(ctx, q, p.CompanyID, d.ID, crew); err != nil {
+					return err
+				}
+				if err := h.notifyNewCrew(ctx, tx, q, d.ID, crewBefore); err != nil {
 					return err
 				}
 				if !d.DepartureAt.Equal(before.DepartureAt) {

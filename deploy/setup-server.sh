@@ -101,6 +101,14 @@ if [ -f "$OVERRIDES" ]; then
   echo "$(grep -c '^[A-Z]' "$ENV_FILE") variables configurées ; fichier d'origine supprimé."
 fi
 
+# Clé de compte de service Firebase (notifications push) : lisible par l'API seulement.
+if [ -f out/firebase-service-account.json ]; then
+  step "Clé Firebase"
+  install -o root -g busvoyage -m 640 out/firebase-service-account.json /etc/busvoyage/firebase-service-account.json
+  rm -f out/firebase-service-account.json
+  echo "Installée : /etc/busvoyage/firebase-service-account.json"
+fi
+
 grep -q '__[A-Z_]*__' "$ENV_FILE" && fail "valeurs __…__ non remplacées dans $ENV_FILE"
 
 # ---------------------------------------------------------------- 5. Nginx et HTTPS

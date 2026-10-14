@@ -34,6 +34,7 @@ import (
 	"busvoyage/internal/departure"
 	"busvoyage/internal/fleet"
 	"busvoyage/internal/identity"
+	"busvoyage/internal/inbox"
 	"busvoyage/internal/invoice"
 	"busvoyage/internal/jobs"
 	"busvoyage/internal/loyalty"
@@ -44,6 +45,7 @@ import (
 	"busvoyage/internal/platform/database"
 	"busvoyage/internal/platform/migrate"
 	"busvoyage/internal/pricing"
+	"busvoyage/internal/push"
 	"busvoyage/internal/review"
 	"busvoyage/internal/seed"
 	"busvoyage/internal/server"
@@ -168,6 +170,7 @@ func build(ctx context.Context, cfg config.Config, db *database.DB) (*app, func(
 		&invoice.Handler{DB: db, Mailer: mailer},
 		&pricing.Handler{DB: db, Cfg: cfg},
 		&review.Handler{DB: db},
+		&inbox.Handler{DB: db},
 	)
 
 	export := func() ([]byte, []byte, error) {
@@ -182,8 +185,12 @@ func build(ctx context.Context, cfg config.Config, db *database.DB) (*app, func(
 		return &app{handler: handler}, export, nil
 	}
 
-	notifier := &notify.Notifier{Brand: notify.BrandFromConfig(cfg), DB: db, SMS: sms, Email: email, WebURL: cfg.PublicWebURL,
-		BookingInvoices: invoice.BookingInvoices}
+	pushSender, err := push.NewFromFile(context.Background(), cfg.FirebaseCredentialsFile)
+	if err != nil {
+		return nil, nil, err
+	}
+	notifier := &notify.Notifier{Brand: notify.BrandFromConfig(cfg), DB: db, SMS: sms, Email: email, Push: pushSender,
+		WebURL: cfg.PublicWebURL, BookingInvoices: invoice.BookingInvoices}
 	mailer.N = notifier
 	workers := river.NewWorkers()
 	river.AddWorker(workers, &notify.WelcomeWorker{N: notifier})
@@ -199,6 +206,9 @@ func build(ctx context.Context, cfg config.Config, db *database.DB) (*app, func(
 	river.AddWorker(workers, &notify.PayLaterWorker{N: notifier})
 	river.AddWorker(workers, &notify.PayLaterRemindersWorker{N: notifier})
 	river.AddWorker(workers, &notify.ReviewInvitationsWorker{N: notifier})
+	river.AddWorker(workers, &notify.SendPushWorker{N: notifier})
+	river.AddWorker(workers, &notify.DepartureProgressWorker{N: notifier})
+	river.AddWorker(workers, &notify.CrewAssignedWorker{N: notifier})
 
 	rc, err := river.NewClient(riverpgxv5.New(db.Pool), &river.Config{
 		Queues:  map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 10}},
@@ -222,6 +232,10 @@ func build(ctx context.Context, cfg config.Config, db *database.DB) (*app, func(
 			// Payer en agence : rappels avant l'échéance.
 			river.NewPeriodicJob(river.PeriodicInterval(15*time.Minute),
 				func() (river.JobArgs, *river.InsertOpts) { return jobs.SendPayLaterRemindersArgs{}, nil },
+				&river.PeriodicJobOpts{RunOnStart: true}),
+			// Notifications en attente : poussées sur les téléphones (délai de quelques secondes).
+			river.NewPeriodicJob(river.PeriodicInterval(10*time.Second),
+				func() (river.JobArgs, *river.InsertOpts) { return jobs.SendPushArgs{}, nil },
 				&river.PeriodicJobOpts{RunOnStart: true}),
 			// Factures et avoirs à envoyer par e-mail (PDF joint).
 			river.NewPeriodicJob(river.PeriodicInterval(time.Minute),

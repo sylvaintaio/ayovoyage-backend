@@ -455,6 +455,43 @@ components:
       required:
         - status
       type: object
+    Agent-inbox-read-allResponse:
+      additionalProperties: false
+      properties:
+        unread:
+          format: int32
+          type: integer
+      required:
+        - unread
+      type: object
+    Agent-inbox-readResponse:
+      additionalProperties: false
+      properties:
+        unread:
+          format: int32
+          type: integer
+      required:
+        - unread
+      type: object
+    Agent-inbox-unreadResponse:
+      additionalProperties: false
+      properties:
+        unread:
+          format: int32
+          type: integer
+      required:
+        - unread
+      type: object
+    Agent-unregister-push-deviceRequest:
+      additionalProperties: false
+      properties:
+        token:
+          maxLength: 4096
+          minLength: 1
+          type: string
+      required:
+        - token
+      type: object
     AgentDevice:
       additionalProperties: false
       properties:
@@ -2905,6 +2942,52 @@ components:
       required:
         - counted_cash
       type: object
+    InboxMessage:
+      additionalProperties: false
+      properties:
+        body:
+          type: string
+        created_at:
+          format: date-time
+          type: string
+        data:
+          additionalProperties:
+            type: string
+          type: object
+        id:
+          type: string
+        kind:
+          type: string
+        link:
+          description: Écran de l'application à ouvrir
+          type: string
+        read:
+          type: boolean
+        title:
+          type: string
+      required:
+        - id
+        - kind
+        - title
+        - body
+        - read
+        - created_at
+      type: object
+    InboxPage:
+      additionalProperties: false
+      properties:
+        messages:
+          items:
+            $ref: "#/components/schemas/InboxMessage"
+          type: array
+        unread:
+          description: Nombre de non lus (pastille sur l'icône de l'application)
+          format: int32
+          type: integer
+      required:
+        - messages
+        - unread
+      type: object
     IncidentCreated:
       additionalProperties: false
       properties:
@@ -3601,6 +3684,43 @@ components:
           type: string
       required:
         - status
+      type: object
+    My-inbox-read-allResponse:
+      additionalProperties: false
+      properties:
+        unread:
+          format: int32
+          type: integer
+      required:
+        - unread
+      type: object
+    My-inbox-readResponse:
+      additionalProperties: false
+      properties:
+        unread:
+          format: int32
+          type: integer
+      required:
+        - unread
+      type: object
+    My-inbox-unreadResponse:
+      additionalProperties: false
+      properties:
+        unread:
+          format: int32
+          type: integer
+      required:
+        - unread
+      type: object
+    My-unregister-push-deviceRequest:
+      additionalProperties: false
+      properties:
+        token:
+          maxLength: 4096
+          minLength: 1
+          type: string
+      required:
+        - token
       type: object
     OTPSent:
       additionalProperties: false
@@ -5089,6 +5209,24 @@ components:
         - amount_due
         - created_at
         - steps
+      type: object
+    PushDeviceInput:
+      additionalProperties: false
+      properties:
+        platform:
+          enum:
+            - android
+            - ios
+            - web
+          type: string
+        token:
+          description: Jeton Firebase Cloud Messaging du téléphone
+          maxLength: 4096
+          minLength: 20
+          type: string
+      required:
+        - token
+        - platform
       type: object
     Quote-parcelRequest:
       additionalProperties: false
@@ -13919,6 +14057,274 @@ paths:
       summary: Vérifier le terminal de ce téléphone
       tags:
         - Agent — Embarquement
+  /v1/agent/inbox:
+    get:
+      description: Réservé au **personnel** (tous rôles).
+      operationId: agent-inbox
+      parameters:
+        - description: "Pagination : messages plus anciens que cette date"
+          explode: false
+          in: query
+          name: before
+          schema:
+            description: "Pagination : messages plus anciens que cette date"
+            format: date-time
+            type: string
+        - explode: false
+          in: query
+          name: limit
+          schema:
+            default: 30
+            format: int64
+            maximum: 100
+            minimum: 1
+            type: integer
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InboxPage"
+          description: OK
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unauthorized
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Forbidden
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unprocessable Entity
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Internal Server Error
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      summary: Mes notifications
+      tags:
+        - Notifications
+  /v1/agent/inbox/read-all:
+    post:
+      description: Réservé au **personnel** (tous rôles).
+      operationId: agent-inbox-read-all
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Agent-inbox-read-allResponse"
+          description: OK
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unauthorized
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Forbidden
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Internal Server Error
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      summary: Tout marquer comme lu
+      tags:
+        - Notifications
+  /v1/agent/inbox/unread:
+    get:
+      description: Réservé au **personnel** (tous rôles).
+      operationId: agent-inbox-unread
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Agent-inbox-unreadResponse"
+          description: OK
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unauthorized
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Forbidden
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Internal Server Error
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      summary: Nombre de notifications non lues
+      tags:
+        - Notifications
+  /v1/agent/inbox/{id}/read:
+    post:
+      description: Réservé au **personnel** (tous rôles).
+      operationId: agent-inbox-read
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Agent-inbox-readResponse"
+          description: OK
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unauthorized
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Forbidden
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unprocessable Entity
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Internal Server Error
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      summary: Marquer une notification comme lue
+      tags:
+        - Notifications
+  /v1/agent/push-devices:
+    post:
+      description: |-
+        À appeler après la connexion et à chaque nouveau jeton Firebase. Un jeton déjà inscrit par un autre compte (changement d'utilisateur sur le téléphone) passe à ce compte.
+
+        Réservé au **personnel** (tous rôles).
+      operationId: agent-register-push-device
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PushDeviceInput"
+        required: true
+      responses:
+        "204":
+          description: No Content
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unauthorized
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Forbidden
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unprocessable Entity
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Internal Server Error
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      summary: Inscrire ce téléphone aux notifications
+      tags:
+        - Notifications
+  /v1/agent/push-devices/remove:
+    post:
+      description: |-
+        Plus aucune notification de ce compte sur ce téléphone.
+
+        Réservé au **personnel** (tous rôles).
+      operationId: agent-unregister-push-device
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Agent-unregister-push-deviceRequest"
+        required: true
+      responses:
+        "204":
+          description: No Content
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unauthorized
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Forbidden
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unprocessable Entity
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Internal Server Error
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      summary: Désinscrire ce téléphone (déconnexion)
+      tags:
+        - Notifications
   /v1/agent/ticket-keys:
     get:
       description: |-
@@ -15177,6 +15583,182 @@ paths:
       summary: Mettre à jour mon profil (client)
       tags:
         - Mon compte
+  /v1/me/inbox:
+    get:
+      description: Réservé aux **clients** connectés.
+      operationId: my-inbox
+      parameters:
+        - description: "Pagination : messages plus anciens que cette date"
+          explode: false
+          in: query
+          name: before
+          schema:
+            description: "Pagination : messages plus anciens que cette date"
+            format: date-time
+            type: string
+        - explode: false
+          in: query
+          name: limit
+          schema:
+            default: 30
+            format: int64
+            maximum: 100
+            minimum: 1
+            type: integer
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InboxPage"
+          description: OK
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unauthorized
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Forbidden
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unprocessable Entity
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Internal Server Error
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      summary: Mes notifications
+      tags:
+        - Notifications
+  /v1/me/inbox/read-all:
+    post:
+      description: Réservé aux **clients** connectés.
+      operationId: my-inbox-read-all
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/My-inbox-read-allResponse"
+          description: OK
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unauthorized
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Forbidden
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Internal Server Error
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      summary: Tout marquer comme lu
+      tags:
+        - Notifications
+  /v1/me/inbox/unread:
+    get:
+      description: Réservé aux **clients** connectés.
+      operationId: my-inbox-unread
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/My-inbox-unreadResponse"
+          description: OK
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unauthorized
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Forbidden
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Internal Server Error
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      summary: Nombre de notifications non lues
+      tags:
+        - Notifications
+  /v1/me/inbox/{id}/read:
+    post:
+      description: Réservé aux **clients** connectés.
+      operationId: my-inbox-read
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/My-inbox-readResponse"
+          description: OK
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unauthorized
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Forbidden
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unprocessable Entity
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Internal Server Error
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      summary: Marquer une notification comme lue
+      tags:
+        - Notifications
   /v1/me/incidents:
     get:
       description: Réservé aux **clients** connectés.
@@ -15881,6 +16463,98 @@ paths:
       summary: Supprimer un proche
       tags:
         - Mon compte
+  /v1/me/push-devices:
+    post:
+      description: |-
+        À appeler après la connexion et à chaque nouveau jeton Firebase. Un jeton déjà inscrit par un autre compte (changement d'utilisateur sur le téléphone) passe à ce compte.
+
+        Réservé aux **clients** connectés.
+      operationId: my-register-push-device
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PushDeviceInput"
+        required: true
+      responses:
+        "204":
+          description: No Content
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unauthorized
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Forbidden
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unprocessable Entity
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Internal Server Error
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      summary: Inscrire ce téléphone aux notifications
+      tags:
+        - Notifications
+  /v1/me/push-devices/remove:
+    post:
+      description: |-
+        Plus aucune notification de ce compte sur ce téléphone.
+
+        Réservé aux **clients** connectés.
+      operationId: my-unregister-push-device
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/My-unregister-push-deviceRequest"
+        required: true
+      responses:
+        "204":
+          description: No Content
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unauthorized
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Forbidden
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unprocessable Entity
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Internal Server Error
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      summary: Désinscrire ce téléphone (déconnexion)
+      tags:
+        - Notifications
   /v1/me/referral:
     get:
       description: Réservé aux **clients** connectés.
