@@ -55,7 +55,7 @@ type CreateInput struct {
 	Passengers   []PassengerInput `json:"passengers" minItems:"1" maxItems:"10"`
 	Preferences  *SeatPreferences `json:"preferences,omitempty"`
 	ContactName  string           `json:"contact_name" minLength:"2" maxLength:"120"`
-	ContactPhone string           `json:"contact_phone" minLength:"8" maxLength:"20"`
+	ContactPhone string           `json:"contact_phone,omitempty" maxLength:"20" doc:"Obligatoire, sauf vente en espèces au guichet et vente à bord"`
 	ContactEmail string           `json:"contact_email,omitempty" format:"email" maxLength:"254"`
 	RedeemPoints int32            `json:"redeem_points,omitempty" minimum:"0" doc:"Points de fidélité à utiliser (clients connectés uniquement)"`
 	BillingName  string           `json:"billing_name,omitempty" maxLength:"160" doc:"Facture au nom d'une entreprise : raison sociale"`
@@ -73,6 +73,8 @@ type createContext struct {
 	staffID    *uuid.UUID
 	tenant     database.Tenant
 	companyID  *uuid.UUID // personnel : la réservation doit concerner sa compagnie
+	// phoneOptional : vente en espèces au guichet, voyageur sans téléphone (billet papier seulement).
+	phoneOptional bool
 }
 
 // Create bloque les sièges et crée une réservation en attente de paiement.
@@ -83,7 +85,7 @@ func (s *Service) create(ctx context.Context, tx pgx.Tx, q *store.Queries, cc cr
 	onboard := cc.channel == "onboard"
 	// Vente à bord : téléphone facultatif (reçu à l'écran, pas de SMS ni de fidélité).
 	contactPhone := ""
-	if !onboard || strings.TrimSpace(in.ContactPhone) != "" {
+	if !(onboard || cc.phoneOptional) || strings.TrimSpace(in.ContactPhone) != "" {
 		var err error
 		if contactPhone, err = phone.Normalize(in.ContactPhone, s.Cfg.DefaultCountryCode); err != nil {
 			return store.Booking{}, huma.Error422UnprocessableEntity("Téléphone de contact invalide")
@@ -127,7 +129,7 @@ func (s *Service) create(ctx context.Context, tx pgx.Tx, q *store.Queries, cc cr
 
 	// Vente au guichet ou à bord : le client est identifié par son téléphone (fidélité),
 	// sauf modification d'une réservation existante (le client est déjà connu).
-	if (cc.channel == "counter" || (onboard && contactPhone != "")) && cc.customerID == nil {
+	if (cc.channel == "counter" || onboard) && contactPhone != "" && cc.customerID == nil {
 		c, err := q.UpsertCustomerByPhone(ctx, store.UpsertCustomerByPhoneParams{
 			Phone: &contactPhone, FullName: in.ContactName, ReferralCode: refgen.Referral(),
 		})
@@ -390,7 +392,23 @@ func (s *Service) CreateForCustomer(ctx context.Context, p auth.Principal, chann
 }
 
 // CreateAtCounter : vente au guichet, encaissement en espèces immédiat.
-func (s *Service) CreateAtCounter(ctx context.Context, p auth.Principal, agencyID *uuid.UUID, in CreateInput) (BookingDetail, error) {
+// CounterPayment : comment le voyageur règle au guichet.
+type CounterPayment struct {
+	// cash : espèces encaissées ; mobile_money : transfert reçu sur le numéro de l'agence (référence obligatoire) ;
+	// online : paiement en ligne lancé par l'agent sur le numéro du voyageur (réservation en attente) ;
+	// later : réservation sans paiement, à régler avant l'heure limite (appel téléphonique).
+	Mode      string `json:"payment,omitempty" enum:"cash,mobile_money,online,later" default:"cash"`
+	Reference string `json:"payment_reference,omitempty" maxLength:"60" doc:"Mobile Money reçu : référence de la transaction"`
+}
+
+// Réservation prise au guichet sans paiement : 2 h pour payer, et au plus tard 1 h avant le passage à l'arrêt de montée.
+const (
+	counterHold     = 2 * time.Hour
+	counterCutoff   = time.Hour
+	counterMinDelay = 10 * time.Minute
+)
+
+func (s *Service) CreateAtCounter(ctx context.Context, p auth.Principal, agencyID *uuid.UUID, in CreateInput, pay CounterPayment) (BookingDetail, error) {
 	if agencyID == nil {
 		agencyID = p.AgencyID
 	}
@@ -399,6 +417,16 @@ func (s *Service) CreateAtCounter(ctx context.Context, p auth.Principal, agencyI
 	}
 	if p.Role != auth.RoleCompanyAdmin && (p.AgencyID == nil || *p.AgencyID != *agencyID) {
 		return BookingDetail{}, huma.Error403Forbidden("Vous ne pouvez vendre que pour votre agence")
+	}
+	mode := pay.Mode
+	if mode == "" {
+		mode = "cash"
+	}
+	if mode == "mobile_money" && len(strings.TrimSpace(pay.Reference)) < 4 {
+		return BookingDetail{}, huma.Error422UnprocessableEntity("Saisissez la référence de la transaction Mobile Money")
+	}
+	if mode != "cash" && strings.TrimSpace(in.ContactPhone) == "" {
+		return BookingDetail{}, huma.Error422UnprocessableEntity("Numéro de téléphone du voyageur obligatoire pour ce mode de paiement")
 	}
 	var out BookingDetail
 	err := s.DB.Tx(ctx, p.Tenant(), func(tx pgx.Tx, q *store.Queries) error {
@@ -409,34 +437,87 @@ func (s *Service) CreateAtCounter(ctx context.Context, p auth.Principal, agencyI
 			return err
 		}
 		staffID := p.ID
-		b, err := s.create(ctx, tx, q, createContext{channel: "counter", agencyID: agencyID, staffID: &staffID, companyID: &p.CompanyID}, in)
+		b, err := s.create(ctx, tx, q, createContext{channel: "counter", agencyID: agencyID, staffID: &staffID, companyID: &p.CompanyID,
+			phoneOptional: mode == "cash"}, in)
 		if err != nil {
 			return err
 		}
-		if b.TotalAmount > 0 {
-			pay, err := q.InsertPayment(ctx, store.InsertPaymentParams{
-				CompanyID: b.CompanyID, BookingID: &b.ID, Provider: "cash", Method: "cash", Amount: b.TotalAmount,
-				Currency: b.Currency, PayerPhone: b.ContactPhone, IdempotencyKey: "cash:" + b.ID.String(),
-				AgencyID: agencyID, ReceivedByStaffID: &staffID,
-			})
-			if err != nil {
+		switch mode {
+		case "online":
+			// Paiement lancé ensuite par l'agent (POST /v1/admin/bookings/{id}/payments) : places gardées le temps du paiement.
+		case "later":
+			if err := s.holdForLater(ctx, tx, q, b); err != nil {
 				return err
 			}
-			if _, err := q.MarkPaymentSucceeded(ctx, pay.ID); err != nil {
+		default:
+			if err := s.collectNow(ctx, tx, q, b, agencyID, staffID, mode, strings.TrimSpace(pay.Reference)); err != nil {
 				return err
 			}
-		}
-		if _, err := s.ConfirmPaid(ctx, tx, q, b.ID); err != nil {
-			return err
 		}
 		if err := apix.Audit(ctx, q, &p.CompanyID, "booking.counter_sale", "booking", b.ID.String(), nil,
-			map[string]any{"reference": b.Reference, "amount": b.TotalAmount, "agency_id": agencyID}); err != nil {
+			map[string]any{"reference": b.Reference, "amount": b.TotalAmount, "agency_id": agencyID, "payment": mode}); err != nil {
 			return err
 		}
 		out, err = LoadDetail(ctx, q, b.ID)
 		return err
 	})
 	return out, err
+}
+
+// collectNow : encaissement immédiat au guichet (espèces, ou Mobile Money reçu sur le numéro de l'agence).
+func (s *Service) collectNow(ctx context.Context, tx pgx.Tx, q *store.Queries, b store.Booking, agencyID *uuid.UUID, staffID uuid.UUID,
+	method, reference string) error {
+	if b.TotalAmount > 0 {
+		var ref *string
+		if method == "mobile_money" {
+			ref = &reference
+		}
+		pay, err := q.InsertPayment(ctx, store.InsertPaymentParams{
+			CompanyID: b.CompanyID, BookingID: &b.ID, Provider: "cash", Method: method, Amount: b.TotalAmount,
+			Currency: b.Currency, PayerPhone: b.ContactPhone, IdempotencyKey: "cash:" + b.ID.String(),
+			AgencyID: agencyID, ReceivedByStaffID: &staffID, ProviderReference: ref,
+		})
+		if c := database.UniqueViolation(err); c == "payments_provider_ref_uq" {
+			return huma.Error409Conflict("Cette référence Mobile Money a déjà été utilisée pour un autre paiement")
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := q.MarkPaymentSucceeded(ctx, pay.ID); err != nil {
+			return err
+		}
+	}
+	_, err := s.ConfirmPaid(ctx, tx, q, b.ID)
+	return err
+}
+
+// holdForLater : réservation prise au téléphone, payée plus tard (agence ou paiement en ligne) avant l'heure limite.
+func (s *Service) holdForLater(ctx context.Context, tx pgx.Tx, q *store.Queries, b store.Booking) error {
+	boardingAt, err := q.BookingBoardingAt(ctx, b.ID)
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	payBy := now.Add(counterHold)
+	if limit := boardingAt.Add(-counterCutoff); limit.Before(payBy) {
+		payBy = limit
+	}
+	if payBy.Sub(now) < counterMinDelay {
+		return huma.Error409Conflict("Départ trop proche pour réserver sans payer : encaissez maintenant")
+	}
+	if blk, err := q.GetActivePayLaterBlock(ctx, store.GetActivePayLaterBlockParams{CompanyID: b.CompanyID, Phone: b.ContactPhone}); err == nil {
+		return huma.Error409Conflict(fmt.Sprintf("Réservation sans paiement refusée pour ce numéro jusqu'au %s (réservations non payées)",
+			blk.BlockedUntil.In(localTZ).Format("02/01/2006")))
+	} else if !database.IsNotFound(err) {
+		return err
+	}
+	if _, err := q.SetBookingPayLater(ctx, store.SetBookingPayLaterParams{ID: b.ID, PayBy: &payBy}); err != nil {
+		return err
+	}
+	if err := q.ExtendBookingSeatHolds(ctx, store.ExtendBookingSeatHoldsParams{BookingID: b.ID, Until: payBy}); err != nil {
+		return err
+	}
+	return s.Queue.InsertTx(ctx, tx, jobs.PayLaterNoticeArgs{BookingID: b.ID, Event: "reserved"})
 }
 
 // ConfirmResult décrit l'issue de la confirmation après paiement.

@@ -89,6 +89,20 @@ func (s *Service) apply(ctx context.Context, tx pgx.Tx, q *store.Queries, pay st
 
 // Initiate démarre un paiement pour une réservation du client.
 func (s *Service) Initiate(ctx context.Context, p auth.Principal, bookingID uuid.UUID, providerName, method, payerPhone, idemKey string) (Payment, error) {
+	owns := func(b store.Booking) bool { return b.CustomerID != nil && *b.CustomerID == p.ID }
+	return s.initiate(ctx, database.Customer(), owns, "cust:"+p.ID.String()+":", nil, bookingID, providerName, method, payerPhone, idemKey)
+}
+
+// InitiateForStaff : un agent lance le paiement en ligne d'une réservation de sa compagnie
+// (voyageur au guichet ou au téléphone, qui confirme sur son propre téléphone).
+func (s *Service) InitiateForStaff(ctx context.Context, p auth.Principal, bookingID uuid.UUID, providerName, method, payerPhone, idemKey string) (Payment, error) {
+	owns := func(b store.Booking) bool { return b.CompanyID == p.CompanyID }
+	staffID := p.ID
+	return s.initiate(ctx, p.Tenant(), owns, "staff:"+p.ID.String()+":", &staffID, bookingID, providerName, method, payerPhone, idemKey)
+}
+
+func (s *Service) initiate(ctx context.Context, tenant database.Tenant, owns func(store.Booking) bool, keyPrefix string, staffID *uuid.UUID,
+	bookingID uuid.UUID, providerName, method, payerPhone, idemKey string) (Payment, error) {
 	prov, ok := s.Providers[providerName]
 	if !ok {
 		return Payment{}, huma.Error422UnprocessableEntity("Moyen de paiement indisponible : " + providerName)
@@ -98,13 +112,13 @@ func (s *Service) Initiate(ctx context.Context, p auth.Principal, bookingID uuid
 		existing bool
 		b        store.Booking
 	)
-	err := s.DB.Tx(ctx, database.Customer(), func(_ pgx.Tx, q *store.Queries) error {
+	err := s.DB.Tx(ctx, tenant, func(_ pgx.Tx, q *store.Queries) error {
 		var err error
 		b, err = q.GetBookingForUpdate(ctx, bookingID)
-		if err != nil || b.CustomerID == nil || *b.CustomerID != p.ID {
+		if err != nil || !owns(b) {
 			return apix.NotFound("Réservation")
 		}
-		key := "cust:" + p.ID.String() + ":" + idemKey
+		key := keyPrefix + idemKey
 		if prev, err := q.GetPaymentByIdempotencyKey(ctx, key); err == nil {
 			if prev.BookingID == nil || *prev.BookingID != b.ID {
 				return huma.Error409Conflict("Clé d'idempotence déjà utilisée pour une autre réservation")
@@ -125,7 +139,7 @@ func (s *Service) Initiate(ctx context.Context, p auth.Principal, bookingID uuid
 		}
 		pay, err = q.InsertPayment(ctx, store.InsertPaymentParams{
 			CompanyID: b.CompanyID, BookingID: &b.ID, Provider: providerName, Method: method, Amount: b.TotalAmount,
-			Currency: b.Currency, PayerPhone: payerPhone, IdempotencyKey: key,
+			Currency: b.Currency, PayerPhone: payerPhone, IdempotencyKey: key, ReceivedByStaffID: staffID,
 		})
 		return err
 	})
@@ -251,6 +265,72 @@ func (s *Service) Register(api huma.API) {
 				Status int
 				Body   Payment
 			}{Status: http.StatusCreated, Body: pay}, nil
+		})
+
+	huma.Register(api, apix.WithDescription(apix.Op("create-staff-payment", http.MethodPost, "/v1/admin/bookings/{id}/payments", tagPayments,
+		"Lancer le paiement en ligne d'une réservation (guichet, téléphone)", apix.Staff,
+		auth.RoleCompanyAdmin, auth.RoleAgencyManager, auth.RoleCashier),
+		"L'agent saisit le numéro Mobile Money du voyageur sur la page du fournisseur (`checkout_url`, ouverte sur son écran) : "+
+			"le voyageur confirme avec son code sur son propre téléphone, même un téléphone simple. Confirmation par webhook ; "+
+			"suivre le statut avec `GET /v1/admin/payments/{id}`."),
+		func(ctx context.Context, in *struct {
+			ID             uuid.UUID `path:"id"`
+			IdempotencyKey string    `header:"Idempotency-Key" required:"true" minLength:"8" maxLength:"100"`
+			Body           struct {
+				Provider   string `json:"provider" doc:"Fournisseur actif (ex. fedapay)"`
+				Method     string `json:"method,omitempty" enum:"mobile_money,card" default:"mobile_money"`
+				PayerPhone string `json:"payer_phone,omitempty" maxLength:"20" doc:"Numéro Mobile Money du voyageur"`
+			}
+		}) (*struct {
+			Status int
+			Body   Payment
+		}, error) {
+			p := auth.MustFromContext(ctx)
+			payer := in.Body.PayerPhone
+			if payer != "" {
+				var err error
+				if payer, err = phone.Normalize(payer, s.Cfg.DefaultCountryCode); err != nil {
+					return nil, huma.Error422UnprocessableEntity("Numéro Mobile Money invalide")
+				}
+			}
+			pay, err := s.InitiateForStaff(ctx, p, in.ID, in.Body.Provider, in.Body.Method, payer, in.IdempotencyKey)
+			if err != nil {
+				return nil, apix.Err(err)
+			}
+			return &struct {
+				Status int
+				Body   Payment
+			}{Status: http.StatusCreated, Body: pay}, nil
+		})
+
+	huma.Register(api, apix.Op("get-staff-payment", http.MethodGet, "/v1/admin/payments/{id}", tagPayments,
+		"Statut d'un paiement (vérifié auprès du fournisseur)", apix.Staff,
+		auth.RoleCompanyAdmin, auth.RoleAgencyManager, auth.RoleCashier, auth.RoleFinance),
+		func(ctx context.Context, in *struct {
+			ID uuid.UUID `path:"id"`
+		}) (*struct{ Body Payment }, error) {
+			p := auth.MustFromContext(ctx)
+			err := s.DB.Tx(ctx, p.Tenant(), func(_ pgx.Tx, q *store.Queries) error {
+				pay, err := q.GetPaymentForUpdate(ctx, in.ID)
+				if err != nil || pay.CompanyID != p.CompanyID {
+					return apix.NotFound("Paiement")
+				}
+				return nil
+			})
+			if err != nil {
+				return nil, apix.Err(err)
+			}
+			pay, err := s.Reconcile(ctx, in.ID)
+			if err != nil {
+				return nil, apix.Err(err)
+			}
+			out := &struct{ Body Payment }{Body: toPayment(pay)}
+			_ = s.DB.Tx(ctx, p.Tenant(), func(_ pgx.Tx, q *store.Queries) error {
+				b, err := q.GetBooking(ctx, bookingOf(pay))
+				out.Body.BookingStatus = b.Status
+				return err
+			})
+			return out, nil
 		})
 
 	huma.Register(api, apix.Op("get-payment", http.MethodGet, "/v1/payments/{id}", tagPayments,

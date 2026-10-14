@@ -522,19 +522,24 @@ func (s *Service) Register(api huma.API) {
 		})
 
 	huma.Register(api, apix.WithDescription(apix.Op("create-counter-booking", http.MethodPost, "/v1/admin/bookings", tagAdmin,
-		"Vente au guichet (paiement espèces)", apix.Staff, sellers...),
-		"Crée et confirme immédiatement la réservation avec un encaissement en espèces rattaché à l'agence et au caissier. "+
+		"Vente au guichet (espèces, Mobile Money, ou réservation à payer)", apix.Staff, sellers...),
+		"`payment` : `cash` (défaut, téléphone facultatif : billet papier), `mobile_money` (transfert reçu sur le numéro de l'agence, "+
+			"`payment_reference` obligatoire et unique), `online` (réservation en attente ; l'agent lance ensuite le paiement sur le numéro "+
+			"du voyageur avec `POST /v1/admin/bookings/{id}/payments`), `later` (appel : places gardées 2 h, au plus tard 1 h avant le "+
+			"passage à l'arrêt de montée ; à encaisser avec « Encaisser » ou par paiement en ligne, sinon libérées). "+
+			"Encaissement rattaché à l'agence et au caissier. "+
 			"Le client est identifié par son téléphone : ses voyages comptent pour la fidélité. "+
 			"Le siège disparaît instantanément de l'application mobile et du site."),
 		func(ctx context.Context, in *struct {
 			Body struct {
 				CreateInput
+				CounterPayment
 				AgencyID *uuid.UUID `json:"agency_id,omitempty" doc:"Par défaut : l'agence de l'employé"`
 			}
 		}) (*createOutput, error) {
 			p := auth.MustFromContext(ctx)
 			in.Body.RedeemPoints = 0
-			d, err := s.CreateAtCounter(ctx, p, in.Body.AgencyID, in.Body.CreateInput)
+			d, err := s.CreateAtCounter(ctx, p, in.Body.AgencyID, in.Body.CreateInput, in.Body.CounterPayment)
 			if err != nil {
 				return nil, apix.Err(err)
 			}

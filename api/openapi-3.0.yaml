@@ -1911,8 +1911,8 @@ components:
           minLength: 2
           type: string
         contact_phone:
+          description: Obligatoire, sauf vente en espèces au guichet et vente à bord
           maxLength: 20
-          minLength: 8
           type: string
         departure_id:
           type: string
@@ -1922,6 +1922,18 @@ components:
           maxItems: 10
           minItems: 1
           type: array
+        payment:
+          default: cash
+          enum:
+            - cash
+            - mobile_money
+            - online
+            - later
+          type: string
+        payment_reference:
+          description: "Mobile Money reçu : référence de la transaction"
+          maxLength: 60
+          type: string
         preferences:
           $ref: "#/components/schemas/SeatPreferences"
         promo_code:
@@ -1937,7 +1949,6 @@ components:
         - departure_id
         - passengers
         - contact_name
-        - contact_phone
       type: object
     Create-departureRequest:
       additionalProperties: false
@@ -2261,6 +2272,25 @@ components:
         - from_date
         - to_date
       type: object
+    Create-staff-paymentRequest:
+      additionalProperties: false
+      properties:
+        method:
+          default: mobile_money
+          enum:
+            - mobile_money
+            - card
+          type: string
+        payer_phone:
+          description: Numéro Mobile Money du voyageur
+          maxLength: 20
+          type: string
+        provider:
+          description: Fournisseur actif (ex. fedapay)
+          type: string
+      required:
+        - provider
+      type: object
     Create-staffRequest:
       additionalProperties: false
       properties:
@@ -2328,8 +2358,8 @@ components:
           minLength: 2
           type: string
         contact_phone:
+          description: Obligatoire, sauf vente en espèces au guichet et vente à bord
           maxLength: 20
-          minLength: 8
           type: string
         departure_id:
           type: string
@@ -2354,7 +2384,6 @@ components:
         - departure_id
         - passengers
         - contact_name
-        - contact_phone
       type: object
     CrewMember:
       additionalProperties: false
@@ -8128,7 +8157,7 @@ paths:
         - Admin — Réservations
     post:
       description: |-
-        Crée et confirme immédiatement la réservation avec un encaissement en espèces rattaché à l'agence et au caissier. Le client est identifié par son téléphone : ses voyages comptent pour la fidélité. Le siège disparaît instantanément de l'application mobile et du site.
+        `payment` : `cash` (défaut, téléphone facultatif : billet papier), `mobile_money` (transfert reçu sur le numéro de l'agence, `payment_reference` obligatoire et unique), `online` (réservation en attente ; l'agent lance ensuite le paiement sur le numéro du voyageur avec `POST /v1/admin/bookings/{id}/payments`), `later` (appel : places gardées 2 h, au plus tard 1 h avant le passage à l'arrêt de montée ; à encaisser avec « Encaisser » ou par paiement en ligne, sinon libérées). Encaissement rattaché à l'agence et au caissier. Le client est identifié par son téléphone : ses voyages comptent pour la fidélité. Le siège disparaît instantanément de l'application mobile et du site.
 
         Réservé au **personnel** — rôles : `company_admin`, `agency_manager`, `cashier`.
       operationId: create-counter-booking
@@ -8172,7 +8201,7 @@ paths:
       security:
         - bearerAuth: []
         - cookieAuth: []
-      summary: Vente au guichet (paiement espèces)
+      summary: Vente au guichet (espèces, Mobile Money, ou réservation à payer)
       tags:
         - Admin — Réservations
   /v1/admin/bookings/{id}:
@@ -8649,6 +8678,69 @@ paths:
       summary: Factures d'une réservation
       tags:
         - Factures
+  /v1/admin/bookings/{id}/payments:
+    post:
+      description: |-
+        L'agent saisit le numéro Mobile Money du voyageur sur la page du fournisseur (`checkout_url`, ouverte sur son écran) : le voyageur confirme avec son code sur son propre téléphone, même un téléphone simple. Confirmation par webhook ; suivre le statut avec `GET /v1/admin/payments/{id}`.
+
+        Réservé au **personnel** — rôles : `company_admin`, `agency_manager`, `cashier`.
+      operationId: create-staff-payment
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema:
+            maxLength: 100
+            minLength: 8
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Create-staff-paymentRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Payment"
+          description: OK
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unauthorized
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Forbidden
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unprocessable Entity
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Internal Server Error
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      summary: Lancer le paiement en ligne d'une réservation (guichet, téléphone)
+      tags:
+        - Paiements
   /v1/admin/bookings/{id}/policy:
     get:
       description: "Réservé au **personnel** — rôles : `company_admin`, `agency_manager`, `cashier`."
@@ -11839,6 +11931,53 @@ paths:
       summary: Rendre le paiement en agence à un numéro mis à l'écart
       tags:
         - Admin — Réservations
+  /v1/admin/payments/{id}:
+    get:
+      description: "Réservé au **personnel** — rôles : `company_admin`, `agency_manager`, `cashier`, `finance`."
+      operationId: get-staff-payment
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Payment"
+          description: OK
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unauthorized
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Forbidden
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unprocessable Entity
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Internal Server Error
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      summary: Statut d'un paiement (vérifié auprès du fournisseur)
+      tags:
+        - Paiements
   /v1/admin/pricing-rules:
     get:
       description: "Réservé au **personnel** — rôles : `company_admin`, `agency_manager`, `finance`."

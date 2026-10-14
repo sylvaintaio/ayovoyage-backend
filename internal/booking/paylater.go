@@ -255,7 +255,11 @@ func (s *Service) Collect(ctx context.Context, p auth.Principal, bookingID uuid.
 			Currency: b.Currency, PayerPhone: b.ContactPhone, IdempotencyKey: "collect:" + b.ID.String(),
 			AgencyID: agencyID, ReceivedByStaffID: &staffID, ProviderReference: ref,
 		})
-		if database.UniqueViolation(err) != "" {
+		switch database.UniqueViolation(err) {
+		case "":
+		case "payments_provider_ref_uq":
+			return huma.Error409Conflict("Cette référence Mobile Money a déjà été utilisée pour un autre paiement")
+		default:
 			return huma.Error409Conflict("Cette réservation a déjà été encaissée")
 		}
 		if err != nil {
