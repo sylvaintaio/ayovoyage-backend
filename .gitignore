@@ -24,3 +24,7 @@ coverage.*
 
 # Kit de déploiement : valeurs locales (SMTP, SMS) préparées par make-overrides.py
 /deploy/out/
+
+# Clé de compte de service Firebase (secret) : jamais dans le dépôt
+*firebase-adminsdk*.json
+*service-account*.json
