@@ -7,6 +7,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -152,7 +154,7 @@ func (s *Service) Register(api huma.API) {
 			if err != nil {
 				return nil, apix.Err(err)
 			}
-			return renderPDFOutput(t)
+			return renderPDFOutput(ctx, t)
 		})
 
 	huma.Register(api, apix.Op("get-ticket-pdf-staff", http.MethodGet, "/v1/admin/tickets/{id}/pdf", tagAdmin, "Imprimer un billet (guichet)", apix.Staff,
@@ -170,7 +172,7 @@ func (s *Service) Register(api huma.API) {
 			if err != nil {
 				return nil, apix.Err(err)
 			}
-			return renderPDFOutput(t)
+			return renderPDFOutput(ctx, t)
 		})
 }
 
@@ -189,8 +191,8 @@ func (s *Service) customerTicket(ctx context.Context, id uuid.UUID) (store.GetTi
 	return t, err
 }
 
-func renderPDFOutput(t store.GetTicketDetailRow) (*pdfOutput, error) {
-	pdf, err := RenderPDF(t)
+func renderPDFOutput(ctx context.Context, t store.GetTicketDetailRow) (*pdfOutput, error) {
+	pdf, err := RenderPDF(ctx, t)
 	if err != nil {
 		return nil, apix.Err(err)
 	}
@@ -206,53 +208,168 @@ func renderPDFOutput(t store.GetTicketDetailRow) (*pdfOutput, error) {
 
 var localTZ = time.FixedZone("WAT", 3600)
 
-// RenderPDF produit un billet au format A6 avec QR code.
-func RenderPDF(t store.GetTicketDetailRow) ([]byte, error) {
+// money : « 12 500 F CFA ».
+func money(amount int64, currency string) string {
+	digits := strconv.FormatInt(amount, 10)
+	var b strings.Builder
+	for i, c := range digits {
+		if i > 0 && (len(digits)-i)%3 == 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteRune(c)
+	}
+	if currency == "" || currency == "XOF" {
+		currency = "F CFA"
+	}
+	return b.String() + " " + currency
+}
+
+func str(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return strings.TrimSpace(*p)
+}
+
+// RenderPDF produit le billet (format A6) : compagnie (logo, nom, coordonnées), trajet du voyageur
+// (montée et descente, heures), QR code, voyageur et place, mentions légales de la compagnie.
+func RenderPDF(ctx context.Context, t store.GetTicketDetailRow) ([]byte, error) {
 	png, err := qrcode.Encode(t.QrPayload, qrcode.Medium, 512)
 	if err != nil {
 		return nil, err
 	}
+	const margin, width = 7.0, 105.0 - 14.0
 	pdf := fpdf.New("P", "mm", "A6", "")
-	tr := pdf.UnicodeTranslatorFromDescriptor("") // UTF-8 → cp1252 (accents)
-	pdf.SetMargins(8, 8, 8)
+	cp1252 := pdf.UnicodeTranslatorFromDescriptor("") // UTF-8 → cp1252 (accents)
+	// Flèches des noms de ligne (« Cotonou → Parakou ») : absentes de la police, remplacées.
+	tr := func(s string) string { return cp1252(strings.NewReplacer("→", "-", "←", "-").Replace(s)) }
+	pdf.SetMargins(margin, margin, margin)
 	pdf.SetAutoPageBreak(false, 0)
 	pdf.AddPage()
+	pdf.SetTextColor(18, 22, 20)
 
-	pdf.SetFont("Helvetica", "B", 14)
-	pdf.CellFormat(0, 7, tr(t.CompanyName), "", 1, "C", false, 0, "")
-	pdf.SetFont("Helvetica", "", 8)
+	// --- Compagnie : logo (si disponible), nom, téléphone
+	y := margin
+	if logo := companyLogo(ctx, t.CompanyLogoUrl); logo != nil {
+		pdf.RegisterImageOptionsReader("logo", fpdf.ImageOptions{ImageType: logo.kind}, bytes.NewReader(logo.data))
+		if info := pdf.GetImageInfo("logo"); info != nil && info.Height() > 0 {
+			h := 12.0
+			w := min(info.Width()*h/info.Height(), width/2)
+			h = w * info.Height() / info.Width()
+			pdf.ImageOptions("logo", (105-w)/2, y, w, h, false, fpdf.ImageOptions{ImageType: logo.kind}, 0, "")
+			y += h + 1.5
+		}
+	}
+	pdf.SetXY(margin, y)
+	pdf.SetFont("Helvetica", "B", 13)
+	pdf.CellFormat(0, 6, tr(t.CompanyName), "", 1, "C", false, 0, "")
+	if phone := str(t.CompanyPhone); phone != "" {
+		pdf.SetFont("Helvetica", "", 8)
+		pdf.CellFormat(0, 4, tr("Tél. "+phone), "", 1, "C", false, 0, "")
+	}
+	pdf.Ln(1.5)
+
+	// --- Bandeau d'état
 	status := map[string]string{"valid": "BILLET VALIDE", "used": "BILLET UTILISÉ", "cancelled": "BILLET ANNULÉ"}[t.Status]
-	pdf.CellFormat(0, 5, tr(status+" — "+t.TicketNumber), "", 1, "C", false, 0, "")
+	switch t.Status {
+	case "valid":
+		pdf.SetFillColor(11, 77, 58)
+	case "cancelled":
+		pdf.SetFillColor(180, 35, 24)
+	default:
+		pdf.SetFillColor(91, 102, 96)
+	}
+	pdf.SetTextColor(255, 255, 255)
+	pdf.SetFont("Helvetica", "B", 9)
+	pdf.CellFormat(0, 6, tr(status+"  ·  "+t.TicketNumber), "", 1, "C", true, 0, "")
+	pdf.SetTextColor(18, 22, 20)
 	pdf.Ln(2)
 
-	pdf.SetFont("Helvetica", "B", 13)
-	pdf.CellFormat(0, 7, tr(t.OriginCity+"  →  "+t.DestinationCity), "", 1, "C", false, 0, "")
-	pdf.SetFont("Helvetica", "", 9)
-	pdf.CellFormat(0, 5, tr("Départ : "+t.DepartureAt.In(localTZ).Format("02/01/2006 à 15h04")), "", 1, "C", false, 0, "")
-	pdf.CellFormat(0, 5, tr(t.OriginAgencyName), "", 1, "C", false, 0, "")
+	// --- Trajet : montée → descente
+	col := (width - 10) / 2
+	top := pdf.GetY()
+	block := func(x float64, label, when, date, stop string) {
+		pdf.SetXY(x, top)
+		pdf.SetFont("Helvetica", "", 7)
+		pdf.SetTextColor(91, 102, 96)
+		pdf.CellFormat(col, 3.5, tr(label), "", 2, "L", false, 0, "")
+		pdf.SetTextColor(18, 22, 20)
+		pdf.SetFont("Helvetica", "B", 15)
+		pdf.CellFormat(col, 7, tr(when), "", 2, "L", false, 0, "")
+		pdf.SetFont("Helvetica", "", 7.5)
+		pdf.CellFormat(col, 3.5, tr(date), "", 2, "L", false, 0, "")
+		pdf.SetFont("Helvetica", "B", 8)
+		pdf.MultiCell(col, 3.6, tr(stop), "", "L", false)
+	}
+	dep, arr := t.DepartureAt.In(localTZ), t.ArrivalEta.In(localTZ)
+	block(margin, "MONTÉE", dep.Format("15h04"), dep.Format("02/01/2006"), t.OriginAgencyName)
+	leftEnd := pdf.GetY()
+	arrDate := ""
+	if arr.YearDay() != dep.YearDay() {
+		arrDate = arr.Format("02/01/2006")
+	}
+	block(margin+col+10, "DESCENTE (heure prévue)", arr.Format("15h04"), arrDate, t.DestinationAgencyName)
+	rightEnd := pdf.GetY()
+	// Flèche entre les deux blocs.
+	ax, ay := margin+col+0.5, top+7
+	pdf.SetDrawColor(245, 183, 0)
+	pdf.SetLineWidth(0.8)
+	pdf.Line(ax, ay, ax+5.5, ay)
+	pdf.SetFillColor(245, 183, 0)
+	pdf.Polygon([]fpdf.PointType{{X: ax + 5.5, Y: ay - 1.6}, {X: ax + 7.5, Y: ay}, {X: ax + 5.5, Y: ay + 1.6}}, "F")
+	pdf.SetY(max(leftEnd, rightEnd) + 1)
+	if addr := strings.TrimSpace(t.OriginAgencyAddress); addr != "" {
+		pdf.SetFont("Helvetica", "", 7)
+		pdf.SetTextColor(91, 102, 96)
+		pdf.MultiCell(0, 3.4, tr("Lieu de montée : "+addr), "", "L", false)
+		pdf.SetTextColor(18, 22, 20)
+	}
 	pdf.Ln(1)
 
+	// --- QR code
 	pdf.RegisterImageOptionsReader("qr", fpdf.ImageOptions{ImageType: "PNG"}, bytes.NewReader(png))
-	pdf.ImageOptions("qr", 32, pdf.GetY(), 41, 41, false, fpdf.ImageOptions{ImageType: "PNG"}, 0, "")
-	pdf.SetY(pdf.GetY() + 43)
+	qr := 36.0
+	pdf.ImageOptions("qr", (105-qr)/2, pdf.GetY(), qr, qr, false, fpdf.ImageOptions{ImageType: "PNG"}, 0, "")
+	pdf.SetY(pdf.GetY() + qr + 1)
 
+	// --- Voyageur et place
 	row := func(label, value string) {
-		pdf.SetFont("Helvetica", "", 8)
-		pdf.CellFormat(30, 5, tr(label), "", 0, "L", false, 0, "")
-		pdf.SetFont("Helvetica", "B", 9)
-		pdf.CellFormat(0, 5, tr(value), "", 1, "L", false, 0, "")
+		pdf.SetFont("Helvetica", "", 7.5)
+		pdf.SetTextColor(91, 102, 96)
+		pdf.CellFormat(26, 4.4, tr(label), "", 0, "L", false, 0, "")
+		pdf.SetTextColor(18, 22, 20)
+		pdf.SetFont("Helvetica", "B", 8.5)
+		pdf.CellFormat(0, 4.4, tr(value), "", 1, "L", false, 0, "")
 	}
-	row("Passager", t.PassengerName)
-	row("Siège", t.SeatLabel+" ("+t.CategoryName+")")
+	row("Voyageur", t.PassengerName)
+	row("Siège", t.SeatLabel+" · "+t.CategoryName)
 	row("Réservation", t.BookingReference)
-	row("Bus", t.PlateNumber)
+	row("Car", t.PlateNumber+" · "+t.RouteName)
 	row("Bagage inclus", fmt.Sprintf("%d kg", t.IncludedBaggageKg))
-	row("Prix", fmt.Sprintf("%d %s", t.TotalPrice, t.Currency))
+	row("Prix", money(t.TotalPrice, t.Currency))
 
-	pdf.Ln(2)
-	pdf.SetFont("Helvetica", "I", 7)
-	pdf.MultiCell(0, 3.5, tr("Présentez ce QR code à l'embarquement, au moins 30 minutes avant le départ. "+
-		"Billet nominatif, vérifié électroniquement : toute copie déjà scannée sera refusée."), "", "C", false)
+	// --- Consignes et mentions de la compagnie
+	pdf.Ln(1)
+	pdf.SetFont("Helvetica", "I", 6.5)
+	pdf.MultiCell(0, 3.1, tr("Présentez ce QR code à l'embarquement, 30 minutes avant le départ. "+
+		"Billet nominatif vérifié électroniquement : une copie déjà scannée est refusée."), "", "C", false)
+	legal := []string{}
+	for _, v := range []string{str(t.CompanyLegalName), str(t.CompanyAddress)} {
+		if v != "" {
+			legal = append(legal, v)
+		}
+	}
+	if v := str(t.CompanyTaxID); v != "" {
+		legal = append(legal, "IFU "+v)
+	}
+	if v := str(t.CompanyEmail); v != "" {
+		legal = append(legal, v)
+	}
+	if len(legal) > 0 {
+		pdf.SetFont("Helvetica", "", 6.5)
+		pdf.SetTextColor(91, 102, 96)
+		pdf.MultiCell(0, 3.1, tr(strings.Join(legal, " · ")), "", "C", false)
+	}
 
 	var buf bytes.Buffer
 	if err := pdf.Output(&buf); err != nil {

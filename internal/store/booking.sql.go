@@ -666,7 +666,9 @@ SELECT t.id, t.company_id, t.booking_id, t.booking_seat_id, t.departure_id, t.ti
        bst.scheduled_at AS departure_at, alt.scheduled_at AS arrival_eta, r.name AS route_name, r.included_baggage_kg,
        bsp.name AS origin_agency_name, bsp.address AS origin_agency_address, oc.name AS origin_city,
        asp.name AS destination_agency_name, dc.name AS destination_city,
-       co.name AS company_name, co.phone AS company_phone, co.currency, bu.plate_number
+       co.name AS company_name, co.phone AS company_phone, co.currency, bu.plate_number,
+       co.legal_name AS company_legal_name, co.address AS company_address, co.tax_id AS company_tax_id,
+       co.email AS company_email, co.logo_url AS company_logo_url
 FROM tickets t
 JOIN booking_seats bs ON bs.id = t.booking_seat_id
 JOIN seat_categories sc ON sc.id = bs.category_id
@@ -717,6 +719,11 @@ type GetTicketDetailRow struct {
 	CompanyPhone          *string
 	Currency              string
 	PlateNumber           string
+	CompanyLegalName      *string
+	CompanyAddress        *string
+	CompanyTaxID          *string
+	CompanyEmail          *string
+	CompanyLogoUrl        *string
 }
 
 // Trajet du voyageur : « origine » = arrêt de montée (heure de passage), « destination » = arrêt de descente.
@@ -756,6 +763,11 @@ func (q *Queries) GetTicketDetail(ctx context.Context, id uuid.UUID) (GetTicketD
 		&i.CompanyPhone,
 		&i.Currency,
 		&i.PlateNumber,
+		&i.CompanyLegalName,
+		&i.CompanyAddress,
+		&i.CompanyTaxID,
+		&i.CompanyEmail,
+		&i.CompanyLogoUrl,
 	)
 	return i, err
 }

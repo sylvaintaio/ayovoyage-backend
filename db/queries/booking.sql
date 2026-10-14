@@ -145,7 +145,9 @@ SELECT t.*, bs.seat_label, bs.passenger_name, bs.passenger_phone, bs.total_price
        bst.scheduled_at AS departure_at, alt.scheduled_at AS arrival_eta, r.name AS route_name, r.included_baggage_kg,
        bsp.name AS origin_agency_name, bsp.address AS origin_agency_address, oc.name AS origin_city,
        asp.name AS destination_agency_name, dc.name AS destination_city,
-       co.name AS company_name, co.phone AS company_phone, co.currency, bu.plate_number
+       co.name AS company_name, co.phone AS company_phone, co.currency, bu.plate_number,
+       co.legal_name AS company_legal_name, co.address AS company_address, co.tax_id AS company_tax_id,
+       co.email AS company_email, co.logo_url AS company_logo_url
 FROM tickets t
 JOIN booking_seats bs ON bs.id = t.booking_seat_id
 JOIN seat_categories sc ON sc.id = bs.category_id
