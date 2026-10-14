@@ -37,7 +37,7 @@ type InboxMessage struct {
 
 type InboxPage struct {
 	Messages []InboxMessage `json:"messages"`
-	Unread   int32     `json:"unread" doc:"Nombre de non lus (pastille sur l'icône de l'application)"`
+	Unread   int32          `json:"unread" doc:"Nombre de non lus (pastille sur l'icône de l'application)"`
 }
 
 type PushDeviceInput struct {
@@ -64,7 +64,7 @@ func (h *Handler) Register(api huma.API) {
 	// Mêmes routes pour l'app Voyageur (/v1/me) et l'app Agent (/v1/agent).
 	for _, side := range []struct {
 		prefix, app, opPrefix string
-		access              apix.Access
+		access                apix.Access
 	}{
 		{"/v1/me", "voyageur", "my", apix.Customer},
 		{"/v1/agent", "agent", "agent", apix.Staff},
