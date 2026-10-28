@@ -100,6 +100,11 @@ type SendInvoiceEmailsArgs struct{}
 
 func (SendInvoiceEmailsArgs) Kind() string { return "send_invoice_emails" }
 
+// GenerateSchedulesArgs : complète les départs des horaires permanents (jusqu'à l'horizon).
+type GenerateSchedulesArgs struct{}
+
+func (GenerateSchedulesArgs) Kind() string { return "generate_departure_schedules" }
+
 type ExpireBookingsArgs struct{}
 
 func (ExpireBookingsArgs) Kind() string { return "expire_bookings" }

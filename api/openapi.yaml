@@ -154,6 +154,12 @@ components:
           type: string
         route_name:
           type: string
+        schedule_id:
+          description: Départ créé par un horaire permanent
+          type: string
+        schedule_override:
+          description: Départ d'un horaire modifié à la main (l'horaire ne le change plus)
+          type: boolean
         seat_count:
           format: int32
           type: integer
@@ -1953,6 +1959,64 @@ components:
         - passengers
         - contact_name
       type: object
+    Create-departure-scheduleRequest:
+      additionalProperties: false
+      properties:
+        active:
+          description: "Faux : suspendre l'horaire (par défaut : actif)"
+          type: boolean
+        agent_id:
+          description: Contrôleur à bord
+          type: string
+        base_price:
+          description: "0 ou absent : tarif de la ligne"
+          format: int64
+          minimum: 0
+          type: integer
+        bus_id:
+          description: Obligatoire, sauf à partir d'un départ (son bus)
+          type: string
+        crew:
+          items:
+            $ref: "#/components/schemas/CrewMemberInput"
+          maxItems: 6
+          type: array
+        driver_id:
+          type: string
+        dry_run:
+          description: Aperçu sans rien enregistrer
+          type: boolean
+        ends_on:
+          description: "Absent : sans fin"
+          format: date
+          type: string
+        from_departure_id:
+          description: Départ existant à rendre régulier
+          type: string
+        notes:
+          maxLength: 1000
+          type: string
+        route_id:
+          description: Obligatoire, sauf à partir d'un départ
+          type: string
+        starts_on:
+          description: "Par défaut : aujourd'hui"
+          format: date
+          type: string
+        time:
+          description: HH:MM, heure du Bénin
+          examples:
+            - "07:00"
+          pattern: ^(([01][0-9]|2[0-3]):[0-5][0-9])?$
+          type: string
+        weekdays:
+          description: 1 = lundi … 7 = dimanche ; vide = tous les jours
+          items:
+            format: int64
+            type: integer
+          maxItems: 7
+          type: array
+      type: object
     Create-departureRequest:
       additionalProperties: false
       properties:
@@ -3353,6 +3417,21 @@ components:
         - client_scan_id
         - qr_payload
         - scanned_at
+      type: object
+    KeptDeparture:
+      additionalProperties: false
+      properties:
+        departure_at:
+          format: date-time
+          type: string
+        id:
+          type: string
+        reason:
+          type: string
+      required:
+        - id
+        - departure_at
+        - reason
       type: object
     LayoutCell:
       additionalProperties: false
@@ -6083,6 +6162,182 @@ components:
         - result
         - message
       type: object
+    Schedule:
+      additionalProperties: false
+      properties:
+        active:
+          description: "Faux : suspendu (plus aucun départ créé)"
+          type: boolean
+        agent_id:
+          type: string
+        base_price:
+          description: "0 : tarif de la ligne"
+          format: int64
+          type: integer
+        bus_id:
+          type: string
+        crew:
+          items:
+            $ref: "#/components/schemas/CrewMemberInput"
+          type: array
+        driver_id:
+          type: string
+        ends_on:
+          description: "Absent : sans fin"
+          format: date
+          type: string
+        id:
+          type: string
+        issues:
+          description: Dates des semaines à venir non créées, et pourquoi
+          items:
+            $ref: "#/components/schemas/ScheduleIssue"
+          type: array
+        next_departure_at:
+          format: date-time
+          type: string
+        notes:
+          type: string
+        plate_number:
+          type: string
+        route_id:
+          type: string
+        route_name:
+          type: string
+        starts_on:
+          format: date
+          type: string
+        time:
+          description: Heure de départ (HH:MM, heure du Bénin)
+          type: string
+        upcoming_count:
+          description: Départs à venir déjà créés
+          format: int32
+          type: integer
+        weekdays:
+          description: 1 = lundi … 7 = dimanche ; vide = tous les jours
+          items:
+            format: int64
+            type: integer
+          type: array
+      required:
+        - id
+        - route_id
+        - route_name
+        - bus_id
+        - plate_number
+        - time
+        - weekdays
+        - base_price
+        - crew
+        - notes
+        - starts_on
+        - active
+        - issues
+        - upcoming_count
+      type: object
+    ScheduleChange:
+      additionalProperties: false
+      properties:
+        created:
+          description: Départs créés
+          format: int64
+          type: integer
+        dry_run:
+          type: boolean
+        issues:
+          items:
+            $ref: "#/components/schemas/ScheduleIssue"
+          type: array
+        kept:
+          description: Départs à venir gardés tels quels (réservés ou modifiés à la main)
+          items:
+            $ref: "#/components/schemas/KeptDeparture"
+          type: array
+        removed:
+          description: Départs à venir retirés (sans réservation)
+          format: int64
+          type: integer
+        schedule:
+          $ref: "#/components/schemas/Schedule"
+        upcoming:
+          description: Prochains départs de l'horaire (10 au plus)
+          items:
+            format: date-time
+            type: string
+          type: array
+      required:
+        - dry_run
+        - created
+        - removed
+        - kept
+        - upcoming
+        - issues
+      type: object
+    ScheduleInput:
+      additionalProperties: false
+      properties:
+        active:
+          description: "Faux : suspendre l'horaire (par défaut : actif)"
+          type: boolean
+        agent_id:
+          description: Contrôleur à bord
+          type: string
+        base_price:
+          description: "0 ou absent : tarif de la ligne"
+          format: int64
+          minimum: 0
+          type: integer
+        bus_id:
+          description: Obligatoire, sauf à partir d'un départ (son bus)
+          type: string
+        crew:
+          items:
+            $ref: "#/components/schemas/CrewMemberInput"
+          maxItems: 6
+          type: array
+        driver_id:
+          type: string
+        dry_run:
+          description: Aperçu sans rien enregistrer
+          type: boolean
+        ends_on:
+          description: "Absent : sans fin"
+          format: date
+          type: string
+        notes:
+          maxLength: 1000
+          type: string
+        starts_on:
+          description: "Par défaut : aujourd'hui"
+          format: date
+          type: string
+        time:
+          description: HH:MM, heure du Bénin
+          examples:
+            - "07:00"
+          pattern: ^(([01][0-9]|2[0-3]):[0-5][0-9])?$
+          type: string
+        weekdays:
+          description: 1 = lundi … 7 = dimanche ; vide = tous les jours
+          items:
+            format: int64
+            type: integer
+          maxItems: 7
+          type: array
+      type: object
+    ScheduleIssue:
+      additionalProperties: false
+      properties:
+        date:
+          format: date
+          type: string
+        reason:
+          type: string
+      required:
+        - date
+        - reason
+      type: object
     SearchResult:
       additionalProperties: false
       properties:
@@ -7587,6 +7842,9 @@ components:
           format: int64
           minimum: 1
           type: integer
+        bus_id:
+          description: "Autre bus (panne, changement de véhicule) ; absent : inchangé"
+          type: string
         crew:
           description: "Absent : autres membres inchangés ; [] : aucun"
           items:
@@ -9359,6 +9617,197 @@ paths:
       summary: "Indicateurs : chiffre d'affaires, billets, remplissage, agences, catégories"
       tags:
         - Admin — Tableau de bord
+  /v1/admin/departure-schedules:
+    get:
+      description: Réservé au **personnel** (tous rôles).
+      operationId: list-departure-schedules
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: "#/components/schemas/Schedule"
+                type: array
+          description: OK
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unauthorized
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Forbidden
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Internal Server Error
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      summary: Horaires permanents de la compagnie
+      tags:
+        - Horaires
+    post:
+      description: |-
+        Les départs sont créés automatiquement jusqu'à 60 jours à l'avance, au fil des jours. Avec `from_departure_id`, transforme un départ existant en départ régulier (ligne, bus, heure, tarif et équipage repris, modifiables dans la demande). `dry_run: true` renvoie l'aperçu sans rien enregistrer.
+
+        Réservé au **personnel** — rôles : `company_admin`, `agency_manager`.
+      operationId: create-departure-schedule
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Create-departure-scheduleRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScheduleChange"
+          description: OK
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unauthorized
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Forbidden
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unprocessable Entity
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Internal Server Error
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      summary: Créer un horaire permanent
+      tags:
+        - Horaires
+  /v1/admin/departure-schedules/{id}:
+    delete:
+      description: |-
+        Les départs à venir sans voyageur ni colis sont retirés ; les autres restent, comme des départs simples.
+
+        Réservé au **personnel** — rôles : `company_admin`, `agency_manager`.
+      operationId: delete-departure-schedule
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScheduleChange"
+          description: OK
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unauthorized
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Forbidden
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unprocessable Entity
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Internal Server Error
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      summary: Supprimer un horaire
+      tags:
+        - Horaires
+    put:
+      description: |-
+        Les départs à venir sans voyageur ni colis sont recréés avec les nouveaux réglages. Ceux déjà réservés, ou modifiés à la main, restent tels quels et sont listés dans `kept` (à modifier un par un si besoin). `active: false` suspend l'horaire. `dry_run: true` renvoie l'aperçu sans rien enregistrer.
+
+        Réservé au **personnel** — rôles : `company_admin`, `agency_manager`.
+      operationId: update-departure-schedule
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScheduleInput"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScheduleChange"
+          description: OK
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unauthorized
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Forbidden
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unprocessable Entity
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Internal Server Error
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      summary: Modifier, suspendre ou reprendre un horaire
+      tags:
+        - Horaires
   /v1/admin/departures:
     get:
       description: Réservé au **personnel** (tous rôles).
@@ -9606,7 +10055,7 @@ paths:
         - Admin — Départs
     put:
       description: |-
-        Le bus et le plan ne sont pas modifiables une fois le départ créé. Un changement d'horaire déclenche une notification des voyageurs.
+        Un changement d'horaire déclenche une notification des voyageurs. Changer de bus : toujours possible vers un bus au même plan de sièges ; vers un autre plan, seulement tant qu'aucune place n'est vendue. Un départ d'horaire permanent modifié ici n'est plus changé par l'horaire.
 
         Réservé au **personnel** — rôles : `company_admin`, `agency_manager`.
       operationId: update-departure
@@ -9656,7 +10105,7 @@ paths:
       security:
         - bearerAuth: []
         - cookieAuth: []
-      summary: Modifier un départ (horaire, tarif, équipage)
+      summary: Modifier un départ (horaire, bus, tarif, équipage)
       tags:
         - Admin — Départs
   /v1/admin/departures/{id}/baggage:

@@ -209,6 +209,7 @@ func build(ctx context.Context, cfg config.Config, db *database.DB) (*app, func(
 	river.AddWorker(workers, &notify.SendPushWorker{N: notifier})
 	river.AddWorker(workers, &notify.DepartureProgressWorker{N: notifier})
 	river.AddWorker(workers, &notify.CrewAssignedWorker{N: notifier})
+	river.AddWorker(workers, &departure.GenerateSchedulesWorker{DB: db})
 
 	rc, err := river.NewClient(riverpgxv5.New(db.Pool), &river.Config{
 		Queues:  map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 10}},
@@ -240,6 +241,10 @@ func build(ctx context.Context, cfg config.Config, db *database.DB) (*app, func(
 			// Factures et avoirs à envoyer par e-mail (PDF joint).
 			river.NewPeriodicJob(river.PeriodicInterval(time.Minute),
 				func() (river.JobArgs, *river.InsertOpts) { return jobs.SendInvoiceEmailsArgs{}, nil },
+				&river.PeriodicJobOpts{RunOnStart: true}),
+			// Horaires permanents : départs créés au fil des jours, jusqu'à l'horizon.
+			river.NewPeriodicJob(river.PeriodicInterval(time.Hour),
+				func() (river.JobArgs, *river.InsertOpts) { return jobs.GenerateSchedulesArgs{}, nil },
 				&river.PeriodicJobOpts{RunOnStart: true}),
 			// Purge des codes de connexion et sessions expirés.
 			river.NewPeriodicJob(river.PeriodicInterval(24*time.Hour),

@@ -1,15 +1,29 @@
 -- name: CreateDeparture :one
 INSERT INTO departures (company_id, route_id, bus_id, layout_id, departure_at, arrival_eta, base_price,
-                        driver_id, agent_id, notes)
+                        driver_id, agent_id, notes, schedule_id, service_date)
 VALUES (@company_id, @route_id, @bus_id, @layout_id, @departure_at, @arrival_eta, @base_price,
-        @driver_id, @agent_id, @notes)
+        @driver_id, @agent_id, @notes, sqlc.narg('schedule_id'), sqlc.narg('service_date'))
 RETURNING *;
 
 -- name: UpdateDeparture :one
+-- Départ d'un horaire modifié à la main : les changements de l'horaire ne le touchent plus.
 UPDATE departures SET departure_at = @departure_at, arrival_eta = @arrival_eta, base_price = @base_price,
-                      driver_id = @driver_id, agent_id = @agent_id, notes = @notes
+                      driver_id = @driver_id, agent_id = @agent_id, notes = @notes,
+                      schedule_override = schedule_id IS NOT NULL
 WHERE id = @id AND company_id = @company_id
 RETURNING *;
+
+-- name: ChangeDepartureBus :one
+UPDATE departures SET bus_id = @bus_id, layout_id = @layout_id, schedule_override = schedule_id IS NOT NULL
+WHERE id = @id AND company_id = @company_id
+RETURNING *;
+
+-- name: DeleteDepartureBlockedSeats :exec
+DELETE FROM departure_blocked_seats WHERE departure_id = @departure_id;
+
+-- name: DepartureHasActiveSeats :one
+-- Places vendues ou en cours de paiement : le plan du car ne peut plus changer.
+SELECT EXISTS (SELECT 1 FROM booking_seats WHERE departure_id = @departure_id AND status IN ('sold', 'held'))::boolean;
 
 -- name: SetDepartureStatus :one
 UPDATE departures SET status = $3 WHERE id = $1 AND company_id = $2 RETURNING *;

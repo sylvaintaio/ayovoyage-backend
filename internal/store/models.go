@@ -271,20 +271,23 @@ type CustomerPassenger struct {
 }
 
 type Departure struct {
-	ID          uuid.UUID
-	CompanyID   uuid.UUID
-	RouteID     uuid.UUID
-	BusID       uuid.UUID
-	LayoutID    uuid.UUID
-	DepartureAt time.Time
-	ArrivalEta  time.Time
-	BasePrice   int64
-	Status      string
-	DriverID    *uuid.UUID
-	AgentID     *uuid.UUID
-	Notes       string
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	ID               uuid.UUID
+	CompanyID        uuid.UUID
+	RouteID          uuid.UUID
+	BusID            uuid.UUID
+	LayoutID         uuid.UUID
+	DepartureAt      time.Time
+	ArrivalEta       time.Time
+	BasePrice        int64
+	Status           string
+	DriverID         *uuid.UUID
+	AgentID          *uuid.UUID
+	Notes            string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	ScheduleID       *uuid.UUID
+	ServiceDate      *time.Time
+	ScheduleOverride bool
 }
 
 type DepartureBlockedSeat struct {
@@ -302,6 +305,28 @@ type DepartureCrew struct {
 	CompanyID   uuid.UUID
 	StaffID     uuid.UUID
 	Role        string
+}
+
+type DepartureSchedule struct {
+	ID             uuid.UUID
+	CompanyID      uuid.UUID
+	RouteID        uuid.UUID
+	BusID          uuid.UUID
+	DepartureTime  string
+	Weekdays       []int16
+	BasePrice      int64
+	DriverID       *uuid.UUID
+	AgentID        *uuid.UUID
+	Crew           json.RawMessage
+	Notes          string
+	StartsOn       time.Time
+	EndsOn         *time.Time
+	Active         bool
+	Issues         json.RawMessage
+	GeneratedUntil *time.Time
+	CreatedBy      *uuid.UUID
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 type DepartureStop struct {

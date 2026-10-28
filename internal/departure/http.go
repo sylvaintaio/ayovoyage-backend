@@ -164,6 +164,8 @@ type AdminDeparture struct {
 	DriverID     *uuid.UUID `json:"driver_id,omitempty"`
 	AgentID      *uuid.UUID `json:"agent_id,omitempty"`
 	Notes        string     `json:"notes"`
+	ScheduleID   *uuid.UUID `json:"schedule_id,omitempty" doc:"Départ créé par un horaire permanent"`
+	Modified     bool       `json:"schedule_override,omitempty" doc:"Départ d'un horaire modifié à la main (l'horaire ne le change plus)"`
 	SeatCount    int32      `json:"seat_count"`
 	SoldSeats    int32      `json:"sold_seats"`
 	BoardedSeats int32      `json:"boarded_seats"`
@@ -293,6 +295,7 @@ func (h *Handler) ChangeStatus(ctx context.Context, p auth.Principal, id uuid.UU
 func (h *Handler) Register(api huma.API) {
 	h.registerOnboard(api)
 	h.registerTracking(api)
+	h.registerSchedules(api)
 	huma.Register(api, apix.WithDescription(apix.Op("search-departures", http.MethodGet, "/v1/public/departures/search", tagPublic,
 		"Rechercher des départs", apix.Public),
 		"La date est interprétée à l'heure locale (Afrique de l'Ouest, UTC+1). Les départs dont la vente est close sont exclus."),
@@ -721,12 +724,15 @@ func (h *Handler) registerAdmin(api huma.API) {
 		})
 
 	huma.Register(api, apix.WithDescription(apix.Op("update-departure", http.MethodPut, "/v1/admin/departures/{id}", tagAdmin,
-		"Modifier un départ (horaire, tarif, équipage)", apix.Staff, planners...),
-		"Le bus et le plan ne sont pas modifiables une fois le départ créé. Un changement d'horaire déclenche une notification des voyageurs."),
+		"Modifier un départ (horaire, bus, tarif, équipage)", apix.Staff, planners...),
+		"Un changement d'horaire déclenche une notification des voyageurs. Changer de bus : toujours possible vers un bus "+
+			"au même plan de sièges ; vers un autre plan, seulement tant qu'aucune place n'est vendue. "+
+			"Un départ d'horaire permanent modifié ici n'est plus changé par l'horaire."),
 		func(ctx context.Context, in *struct {
 			ID   uuid.UUID `path:"id"`
 			Body struct {
 				DepartureAt time.Time         `json:"departure_at"`
+				BusID       *uuid.UUID        `json:"bus_id,omitempty" doc:"Autre bus (panne, changement de véhicule) ; absent : inchangé"`
 				BasePrice   int64             `json:"base_price" minimum:"1" doc:"S'applique aux nouvelles ventes uniquement"`
 				DriverID    *uuid.UUID        `json:"driver_id,omitempty"`
 				AgentID     *uuid.UUID        `json:"agent_id,omitempty" doc:"Contrôleur à bord"`
@@ -749,6 +755,34 @@ func (h *Handler) registerAdmin(api huma.API) {
 					return huma.Error409Conflict("Départ déjà parti ou annulé")
 				}
 				arrival := b.DepartureAt.Add(before.ArrivalEta.Sub(before.DepartureAt))
+				// Autre bus : disponible, et plan compatible avec les places déjà vendues.
+				var newBus *store.Bus
+				if b.BusID != nil && *b.BusID != before.BusID {
+					bus, err := q.GetBus(ctx, store.GetBusParams{ID: *b.BusID, CompanyID: p.CompanyID})
+					if database.IsNotFound(err) {
+						return huma.Error422UnprocessableEntity("Bus inconnu")
+					}
+					if err != nil {
+						return err
+					}
+					if bus.Status != "active" {
+						return huma.Error409Conflict("Ce bus n'est pas disponible (statut : " + bus.Status + ")")
+					}
+					if bus.LayoutID != before.LayoutID {
+						busy, err := q.DepartureHasActiveSeats(ctx, before.ID)
+						if err != nil {
+							return err
+						}
+						if busy {
+							return huma.Error409Conflict("Des places sont déjà vendues : choisissez un bus avec le même plan de sièges")
+						}
+					}
+					newBus = &bus
+				}
+				busID := before.BusID
+				if newBus != nil {
+					busID = newBus.ID
+				}
 				crew := b.Crew
 				if crew == nil { // champ absent : autres membres conservés
 					rows, err := q.ListDepartureCrew(ctx, before.ID)
@@ -764,7 +798,7 @@ func (h *Handler) registerAdmin(api huma.API) {
 					return err
 				}
 				overlap, err := q.BusHasOverlappingDeparture(ctx, store.BusHasOverlappingDepartureParams{
-					BusID: before.BusID, ExcludeID: &before.ID, DepartureAt: b.DepartureAt, ArrivalEta: arrival,
+					BusID: busID, ExcludeID: &before.ID, DepartureAt: b.DepartureAt, ArrivalEta: arrival,
 				})
 				if err != nil {
 					return err
@@ -781,6 +815,21 @@ func (h *Handler) registerAdmin(api huma.API) {
 					DriverID: b.DriverID, AgentID: b.AgentID, Notes: b.Notes})
 				if err != nil {
 					return err
+				}
+				if newBus != nil {
+					if d, err = q.ChangeDepartureBus(ctx, store.ChangeDepartureBusParams{ID: d.ID, CompanyID: p.CompanyID,
+						BusID: newBus.ID, LayoutID: newBus.LayoutID}); err != nil {
+						return err
+					}
+					if newBus.LayoutID != before.LayoutID {
+						// Autre plan : sièges bloqués et quota du contrôleur refaits sur le nouveau plan.
+						if err := q.DeleteDepartureBlockedSeats(ctx, d.ID); err != nil {
+							return err
+						}
+						if _, err := applyDefaultQuota(ctx, q, d, &p.ID); err != nil {
+							return err
+						}
+					}
 				}
 				if err := saveCrew(ctx, q, p.CompanyID, d.ID, crew); err != nil {
 					return err
@@ -801,8 +850,8 @@ func (h *Handler) registerAdmin(api huma.API) {
 				out.Body = AdminDeparture{ID: d.ID, RouteID: d.RouteID, BusID: d.BusID, DepartureAt: d.DepartureAt, ArrivalEta: d.ArrivalEta,
 					BasePrice: d.BasePrice, Status: d.Status, DriverID: d.DriverID, AgentID: d.AgentID, Notes: d.Notes}
 				return apix.Audit(ctx, q, &p.CompanyID, "departure.updated", "departure", d.ID.String(),
-					map[string]any{"departure_at": before.DepartureAt, "base_price": before.BasePrice},
-					map[string]any{"departure_at": d.DepartureAt, "base_price": d.BasePrice})
+					map[string]any{"departure_at": before.DepartureAt, "base_price": before.BasePrice, "bus_id": before.BusID},
+					map[string]any{"departure_at": d.DepartureAt, "base_price": d.BasePrice, "bus_id": d.BusID})
 			})
 			return out, apix.Err(err)
 		})
@@ -910,7 +959,7 @@ func ListForStaff(ctx context.Context, q *store.Queries, params store.ListDepart
 	for _, r := range rows {
 		out = append(out, AdminDeparture{ID: r.ID, RouteID: r.RouteID, RouteName: r.RouteName, BusID: r.BusID, PlateNumber: r.PlateNumber,
 			DepartureAt: r.DepartureAt, ArrivalEta: r.ArrivalEta, BasePrice: r.BasePrice, Status: r.Status,
-			DriverID: r.DriverID, AgentID: r.AgentID, Notes: r.Notes, SeatCount: r.SeatCount, SoldSeats: r.SoldSeats, BoardedSeats: r.BoardedSeats, PeakSeats: r.PeakSeats})
+			DriverID: r.DriverID, AgentID: r.AgentID, Notes: r.Notes, ScheduleID: r.ScheduleID, Modified: r.ScheduleOverride, SeatCount: r.SeatCount, SoldSeats: r.SoldSeats, BoardedSeats: r.BoardedSeats, PeakSeats: r.PeakSeats})
 	}
 	return out, err
 }

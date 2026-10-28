@@ -65,39 +65,25 @@ func (q *Queries) BusHasOverlappingDeparture(ctx context.Context, arg BusHasOver
 	return overlaps, err
 }
 
-const createDeparture = `-- name: CreateDeparture :one
-INSERT INTO departures (company_id, route_id, bus_id, layout_id, departure_at, arrival_eta, base_price,
-                        driver_id, agent_id, notes)
-VALUES ($1, $2, $3, $4, $5, $6, $7,
-        $8, $9, $10)
-RETURNING id, company_id, route_id, bus_id, layout_id, departure_at, arrival_eta, base_price, status, driver_id, agent_id, notes, created_at, updated_at
+const changeDepartureBus = `-- name: ChangeDepartureBus :one
+UPDATE departures SET bus_id = $1, layout_id = $2, schedule_override = schedule_id IS NOT NULL
+WHERE id = $3 AND company_id = $4
+RETURNING id, company_id, route_id, bus_id, layout_id, departure_at, arrival_eta, base_price, status, driver_id, agent_id, notes, created_at, updated_at, schedule_id, service_date, schedule_override
 `
 
-type CreateDepartureParams struct {
-	CompanyID   uuid.UUID
-	RouteID     uuid.UUID
-	BusID       uuid.UUID
-	LayoutID    uuid.UUID
-	DepartureAt time.Time
-	ArrivalEta  time.Time
-	BasePrice   int64
-	DriverID    *uuid.UUID
-	AgentID     *uuid.UUID
-	Notes       string
+type ChangeDepartureBusParams struct {
+	BusID     uuid.UUID
+	LayoutID  uuid.UUID
+	ID        uuid.UUID
+	CompanyID uuid.UUID
 }
 
-func (q *Queries) CreateDeparture(ctx context.Context, arg CreateDepartureParams) (Departure, error) {
-	row := q.db.QueryRow(ctx, createDeparture,
-		arg.CompanyID,
-		arg.RouteID,
+func (q *Queries) ChangeDepartureBus(ctx context.Context, arg ChangeDepartureBusParams) (Departure, error) {
+	row := q.db.QueryRow(ctx, changeDepartureBus,
 		arg.BusID,
 		arg.LayoutID,
-		arg.DepartureAt,
-		arg.ArrivalEta,
-		arg.BasePrice,
-		arg.DriverID,
-		arg.AgentID,
-		arg.Notes,
+		arg.ID,
+		arg.CompanyID,
 	)
 	var i Departure
 	err := row.Scan(
@@ -115,12 +101,97 @@ func (q *Queries) CreateDeparture(ctx context.Context, arg CreateDepartureParams
 		&i.Notes,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ScheduleID,
+		&i.ServiceDate,
+		&i.ScheduleOverride,
 	)
 	return i, err
 }
 
+const createDeparture = `-- name: CreateDeparture :one
+INSERT INTO departures (company_id, route_id, bus_id, layout_id, departure_at, arrival_eta, base_price,
+                        driver_id, agent_id, notes, schedule_id, service_date)
+VALUES ($1, $2, $3, $4, $5, $6, $7,
+        $8, $9, $10, $11, $12)
+RETURNING id, company_id, route_id, bus_id, layout_id, departure_at, arrival_eta, base_price, status, driver_id, agent_id, notes, created_at, updated_at, schedule_id, service_date, schedule_override
+`
+
+type CreateDepartureParams struct {
+	CompanyID   uuid.UUID
+	RouteID     uuid.UUID
+	BusID       uuid.UUID
+	LayoutID    uuid.UUID
+	DepartureAt time.Time
+	ArrivalEta  time.Time
+	BasePrice   int64
+	DriverID    *uuid.UUID
+	AgentID     *uuid.UUID
+	Notes       string
+	ScheduleID  *uuid.UUID
+	ServiceDate *time.Time
+}
+
+func (q *Queries) CreateDeparture(ctx context.Context, arg CreateDepartureParams) (Departure, error) {
+	row := q.db.QueryRow(ctx, createDeparture,
+		arg.CompanyID,
+		arg.RouteID,
+		arg.BusID,
+		arg.LayoutID,
+		arg.DepartureAt,
+		arg.ArrivalEta,
+		arg.BasePrice,
+		arg.DriverID,
+		arg.AgentID,
+		arg.Notes,
+		arg.ScheduleID,
+		arg.ServiceDate,
+	)
+	var i Departure
+	err := row.Scan(
+		&i.ID,
+		&i.CompanyID,
+		&i.RouteID,
+		&i.BusID,
+		&i.LayoutID,
+		&i.DepartureAt,
+		&i.ArrivalEta,
+		&i.BasePrice,
+		&i.Status,
+		&i.DriverID,
+		&i.AgentID,
+		&i.Notes,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ScheduleID,
+		&i.ServiceDate,
+		&i.ScheduleOverride,
+	)
+	return i, err
+}
+
+const deleteDepartureBlockedSeats = `-- name: DeleteDepartureBlockedSeats :exec
+DELETE FROM departure_blocked_seats WHERE departure_id = $1
+`
+
+func (q *Queries) DeleteDepartureBlockedSeats(ctx context.Context, departureID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteDepartureBlockedSeats, departureID)
+	return err
+}
+
+const departureHasActiveSeats = `-- name: DepartureHasActiveSeats :one
+SELECT EXISTS (SELECT 1 FROM booking_seats WHERE departure_id = $1 AND status IN ('sold', 'held'))::boolean
+`
+
+// Places vendues ou en cours de paiement : le plan du car ne peut plus changer.
+func (q *Queries) DepartureHasActiveSeats(ctx context.Context, departureID uuid.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, departureHasActiveSeats, departureID)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const getDeparture = `-- name: GetDeparture :one
-SELECT id, company_id, route_id, bus_id, layout_id, departure_at, arrival_eta, base_price, status, driver_id, agent_id, notes, created_at, updated_at FROM departures WHERE id = $1
+SELECT id, company_id, route_id, bus_id, layout_id, departure_at, arrival_eta, base_price, status, driver_id, agent_id, notes, created_at, updated_at, schedule_id, service_date, schedule_override FROM departures WHERE id = $1
 `
 
 func (q *Queries) GetDeparture(ctx context.Context, id uuid.UUID) (Departure, error) {
@@ -141,6 +212,9 @@ func (q *Queries) GetDeparture(ctx context.Context, id uuid.UUID) (Departure, er
 		&i.Notes,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ScheduleID,
+		&i.ServiceDate,
+		&i.ScheduleOverride,
 	)
 	return i, err
 }
@@ -317,7 +391,7 @@ func (q *Queries) GetDepartureSeatMap(ctx context.Context, arg GetDepartureSeatM
 }
 
 const listDepartures = `-- name: ListDepartures :many
-SELECT d.id, d.company_id, d.route_id, d.bus_id, d.layout_id, d.departure_at, d.arrival_eta, d.base_price, d.status, d.driver_id, d.agent_id, d.notes, d.created_at, d.updated_at, r.name AS route_name, b.plate_number, l.seat_count,
+SELECT d.id, d.company_id, d.route_id, d.bus_id, d.layout_id, d.departure_at, d.arrival_eta, d.base_price, d.status, d.driver_id, d.agent_id, d.notes, d.created_at, d.updated_at, d.schedule_id, d.service_date, d.schedule_override, r.name AS route_name, b.plate_number, l.seat_count,
        (SELECT count(*) FROM booking_seats bs WHERE bs.departure_id = d.id AND bs.status = 'sold')::int AS sold_seats,
        (SELECT count(*) FROM tickets t WHERE t.departure_id = d.id AND t.status = 'used')::int AS boarded_seats,
        COALESCE((SELECT max(n) FROM (
@@ -352,26 +426,29 @@ type ListDeparturesParams struct {
 }
 
 type ListDeparturesRow struct {
-	ID           uuid.UUID
-	CompanyID    uuid.UUID
-	RouteID      uuid.UUID
-	BusID        uuid.UUID
-	LayoutID     uuid.UUID
-	DepartureAt  time.Time
-	ArrivalEta   time.Time
-	BasePrice    int64
-	Status       string
-	DriverID     *uuid.UUID
-	AgentID      *uuid.UUID
-	Notes        string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-	RouteName    string
-	PlateNumber  string
-	SeatCount    int32
-	SoldSeats    int32
-	BoardedSeats int32
-	PeakSeats    int32
+	ID               uuid.UUID
+	CompanyID        uuid.UUID
+	RouteID          uuid.UUID
+	BusID            uuid.UUID
+	LayoutID         uuid.UUID
+	DepartureAt      time.Time
+	ArrivalEta       time.Time
+	BasePrice        int64
+	Status           string
+	DriverID         *uuid.UUID
+	AgentID          *uuid.UUID
+	Notes            string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	ScheduleID       *uuid.UUID
+	ServiceDate      *time.Time
+	ScheduleOverride bool
+	RouteName        string
+	PlateNumber      string
+	SeatCount        int32
+	SoldSeats        int32
+	BoardedSeats     int32
+	PeakSeats        int32
 }
 
 // sold_seats : passagers vendus (un siège revendu après une descente compte deux fois) ;
@@ -410,6 +487,9 @@ func (q *Queries) ListDepartures(ctx context.Context, arg ListDeparturesParams) 
 			&i.Notes,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ScheduleID,
+			&i.ServiceDate,
+			&i.ScheduleOverride,
 			&i.RouteName,
 			&i.PlateNumber,
 			&i.SeatCount,
@@ -637,7 +717,7 @@ func (q *Queries) SearchDepartures(ctx context.Context, arg SearchDeparturesPara
 }
 
 const setDepartureStatus = `-- name: SetDepartureStatus :one
-UPDATE departures SET status = $3 WHERE id = $1 AND company_id = $2 RETURNING id, company_id, route_id, bus_id, layout_id, departure_at, arrival_eta, base_price, status, driver_id, agent_id, notes, created_at, updated_at
+UPDATE departures SET status = $3 WHERE id = $1 AND company_id = $2 RETURNING id, company_id, route_id, bus_id, layout_id, departure_at, arrival_eta, base_price, status, driver_id, agent_id, notes, created_at, updated_at, schedule_id, service_date, schedule_override
 `
 
 type SetDepartureStatusParams struct {
@@ -664,6 +744,9 @@ func (q *Queries) SetDepartureStatus(ctx context.Context, arg SetDepartureStatus
 		&i.Notes,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ScheduleID,
+		&i.ServiceDate,
+		&i.ScheduleOverride,
 	)
 	return i, err
 }
@@ -685,9 +768,10 @@ func (q *Queries) UnblockDepartureSeat(ctx context.Context, arg UnblockDeparture
 
 const updateDeparture = `-- name: UpdateDeparture :one
 UPDATE departures SET departure_at = $1, arrival_eta = $2, base_price = $3,
-                      driver_id = $4, agent_id = $5, notes = $6
+                      driver_id = $4, agent_id = $5, notes = $6,
+                      schedule_override = schedule_id IS NOT NULL
 WHERE id = $7 AND company_id = $8
-RETURNING id, company_id, route_id, bus_id, layout_id, departure_at, arrival_eta, base_price, status, driver_id, agent_id, notes, created_at, updated_at
+RETURNING id, company_id, route_id, bus_id, layout_id, departure_at, arrival_eta, base_price, status, driver_id, agent_id, notes, created_at, updated_at, schedule_id, service_date, schedule_override
 `
 
 type UpdateDepartureParams struct {
@@ -701,6 +785,7 @@ type UpdateDepartureParams struct {
 	CompanyID   uuid.UUID
 }
 
+// Départ d'un horaire modifié à la main : les changements de l'horaire ne le touchent plus.
 func (q *Queries) UpdateDeparture(ctx context.Context, arg UpdateDepartureParams) (Departure, error) {
 	row := q.db.QueryRow(ctx, updateDeparture,
 		arg.DepartureAt,
@@ -728,6 +813,9 @@ func (q *Queries) UpdateDeparture(ctx context.Context, arg UpdateDepartureParams
 		&i.Notes,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ScheduleID,
+		&i.ServiceDate,
+		&i.ScheduleOverride,
 	)
 	return i, err
 }

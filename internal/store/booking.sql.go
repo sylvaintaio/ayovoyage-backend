@@ -1901,7 +1901,7 @@ func (q *Queries) ListPayLaterReminders(ctx context.Context) ([]uuid.UUID, error
 }
 
 const lockDepartureForBooking = `-- name: LockDepartureForBooking :one
-SELECT d.id, d.company_id, d.route_id, d.bus_id, d.layout_id, d.departure_at, d.arrival_eta, d.base_price, d.status, d.driver_id, d.agent_id, d.notes, d.created_at, d.updated_at, co.booking_hold_minutes, co.sales_cutoff_minutes, co.currency
+SELECT d.id, d.company_id, d.route_id, d.bus_id, d.layout_id, d.departure_at, d.arrival_eta, d.base_price, d.status, d.driver_id, d.agent_id, d.notes, d.created_at, d.updated_at, d.schedule_id, d.service_date, d.schedule_override, co.booking_hold_minutes, co.sales_cutoff_minutes, co.currency
 FROM departures d
 JOIN companies co ON co.id = d.company_id
 WHERE d.id = $1
@@ -1923,6 +1923,9 @@ type LockDepartureForBookingRow struct {
 	Notes              string
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
+	ScheduleID         *uuid.UUID
+	ServiceDate        *time.Time
+	ScheduleOverride   bool
 	BookingHoldMinutes int32
 	SalesCutoffMinutes int32
 	Currency           string
@@ -1947,6 +1950,9 @@ func (q *Queries) LockDepartureForBooking(ctx context.Context, id uuid.UUID) (Lo
 		&i.Notes,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ScheduleID,
+		&i.ServiceDate,
+		&i.ScheduleOverride,
 		&i.BookingHoldMinutes,
 		&i.SalesCutoffMinutes,
 		&i.Currency,
