@@ -531,12 +531,18 @@ func (q *Queries) ListBookingInvoices(ctx context.Context, bookingID *uuid.UUID)
 }
 
 const listCustomerInvoices = `-- name: ListCustomerInvoices :many
-SELECT id, company_id, kind, number, issued_at, payment_id, refund_id, booking_id, parcel_id, original_invoice_id, customer_id, seller_name, seller_legal_name, seller_tax_id, seller_trade_register, seller_address, seller_phone, seller_email, footer, customer_name, customer_phone, customer_email, customer_company, customer_tax_id, agency_name, operator_name, payment_method, reference, currency, total_amount, emecef_status, emecef_code, emecef_qr, emecef_nim, emecef_counters, emecef_certified_at, created_at, email_status, email_to, email_attempts, email_next_at, email_error, emailed_at FROM invoices WHERE customer_id = $1 ORDER BY issued_at DESC LIMIT 200
+SELECT id, company_id, kind, number, issued_at, payment_id, refund_id, booking_id, parcel_id, original_invoice_id, customer_id, seller_name, seller_legal_name, seller_tax_id, seller_trade_register, seller_address, seller_phone, seller_email, footer, customer_name, customer_phone, customer_email, customer_company, customer_tax_id, agency_name, operator_name, payment_method, reference, currency, total_amount, emecef_status, emecef_code, emecef_qr, emecef_nim, emecef_counters, emecef_certified_at, created_at, email_status, email_to, email_attempts, email_next_at, email_error, emailed_at FROM invoices WHERE customer_id = $1 ORDER BY issued_at DESC, id DESC LIMIT $3 OFFSET $2
 `
 
+type ListCustomerInvoicesParams struct {
+	CustomerID *uuid.UUID
+	Off        int32
+	Lim        int32
+}
+
 // Factures d'un client : ses réservations et les colis qu'il a payés.
-func (q *Queries) ListCustomerInvoices(ctx context.Context, customerID *uuid.UUID) ([]Invoice, error) {
-	rows, err := q.db.Query(ctx, listCustomerInvoices, customerID)
+func (q *Queries) ListCustomerInvoices(ctx context.Context, arg ListCustomerInvoicesParams) ([]Invoice, error) {
+	rows, err := q.db.Query(ctx, listCustomerInvoices, arg.CustomerID, arg.Off, arg.Lim)
 	if err != nil {
 		return nil, err
 	}

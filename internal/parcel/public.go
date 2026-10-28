@@ -217,11 +217,11 @@ func (s *Service) registerPublic(api huma.API) {
 		})
 
 	huma.Register(api, apix.Op("list-my-incidents", http.MethodGet, "/v1/me/incidents", tagPublicParcels, "Mes réclamations", apix.Customer),
-		func(ctx context.Context, _ *struct{}) (*struct{ Body []IncidentSummary }, error) {
+		func(ctx context.Context, in *struct{ apix.Page }) (*struct{ Body []IncidentSummary }, error) {
 			p := auth.MustFromContext(ctx)
 			out := &struct{ Body []IncidentSummary }{Body: []IncidentSummary{}}
 			err := s.DB.Tx(ctx, database.System(), func(_ pgx.Tx, q *store.Queries) error {
-				rows, err := q.ListCustomerIncidents(ctx, &p.ID)
+				rows, err := q.ListCustomerIncidents(ctx, store.ListCustomerIncidentsParams{CustomerID: &p.ID, Lim: in.Limit, Off: in.Offset})
 				for _, r := range rows {
 					out.Body = append(out.Body, IncidentSummary{ID: r.ID, Reference: r.Reference, SubjectType: r.SubjectType, Category: r.Category,
 						Status: r.Status, TrackingNumber: r.TrackingNumber, BookingReference: r.BookingReference, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt})

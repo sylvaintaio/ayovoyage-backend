@@ -342,11 +342,11 @@ func (h *Handler) Register(api huma.API) {
 
 	// --- Espace client
 	huma.Register(api, apix.Op("list-my-invoices", http.MethodGet, "/v1/me/invoices", tag, "Mes factures", apix.Customer),
-		func(ctx context.Context, _ *struct{}) (*struct{ Body []Invoice }, error) {
+		func(ctx context.Context, in *struct{ apix.Page }) (*struct{ Body []Invoice }, error) {
 			p := auth.MustFromContext(ctx)
 			out := &struct{ Body []Invoice }{Body: []Invoice{}}
 			err := h.DB.Tx(ctx, database.System(), func(_ pgx.Tx, q *store.Queries) error {
-				rows, err := q.ListCustomerInvoices(ctx, &p.ID)
+				rows, err := q.ListCustomerInvoices(ctx, store.ListCustomerInvoicesParams{CustomerID: &p.ID, Lim: in.Limit, Off: in.Offset})
 				out.Body = list(rows)
 				return err
 			})

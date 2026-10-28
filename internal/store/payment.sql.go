@@ -818,13 +818,14 @@ JOIN staff_users s ON s.id = c.closed_by
 JOIN agencies a ON a.id = c.agency_id
 WHERE c.company_id = $1
   AND ($2::uuid IS NULL OR c.agency_id = $2::uuid)
-ORDER BY c.business_date DESC, a.name
-LIMIT $3
+ORDER BY c.business_date DESC, a.name, c.id
+LIMIT $4 OFFSET $3
 `
 
 type ListCashClosuresParams struct {
 	CompanyID uuid.UUID
 	AgencyID  *uuid.UUID
+	Off       int32
 	Lim       int32
 }
 
@@ -847,7 +848,12 @@ type ListCashClosuresRow struct {
 }
 
 func (q *Queries) ListCashClosures(ctx context.Context, arg ListCashClosuresParams) ([]ListCashClosuresRow, error) {
-	rows, err := q.db.Query(ctx, listCashClosures, arg.CompanyID, arg.AgencyID, arg.Lim)
+	rows, err := q.db.Query(ctx, listCashClosures,
+		arg.CompanyID,
+		arg.AgencyID,
+		arg.Off,
+		arg.Lim,
+	)
 	if err != nil {
 		return nil, err
 	}

@@ -174,5 +174,5 @@ JOIN staff_users s ON s.id = c.closed_by
 JOIN agencies a ON a.id = c.agency_id
 WHERE c.company_id = @company_id
   AND (sqlc.narg('agency_id')::uuid IS NULL OR c.agency_id = sqlc.narg('agency_id')::uuid)
-ORDER BY c.business_date DESC, a.name
-LIMIT @lim;
+ORDER BY c.business_date DESC, a.name, c.id
+LIMIT @lim OFFSET @off;

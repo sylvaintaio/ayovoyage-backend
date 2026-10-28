@@ -260,9 +260,9 @@ FROM incidents i
 LEFT JOIN parcels p ON p.id = i.parcel_id
 LEFT JOIN baggage_tags t ON t.id = i.baggage_id
 LEFT JOIN bookings b ON b.id = coalesce(i.booking_id, t.booking_id)
-WHERE i.reporter_customer_id = $1
-ORDER BY i.created_at DESC
-LIMIT 100;
+WHERE i.reporter_customer_id = @customer_id
+ORDER BY i.created_at DESC, i.id DESC
+LIMIT @lim OFFSET @off;
 
 -- name: UpdateIncident :one
 UPDATE incidents SET status = @status, priority = @priority, assigned_to = sqlc.narg(assigned_to), resolution = @resolution,

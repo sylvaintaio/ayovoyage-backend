@@ -217,6 +217,7 @@ func (s *Service) registerCash(api huma.API) {
 		func(ctx context.Context, in *struct {
 			AgencyID uuid.UUID `query:"agency_id"`
 			Limit    int32     `query:"limit" minimum:"1" maximum:"200" default:"60"`
+			Offset   int32     `query:"offset" minimum:"0" default:"0" doc:"Décalage pour la pagination"`
 		}) (*struct{ Body []CashClosure }, error) {
 			p := auth.MustFromContext(ctx)
 			var filter *uuid.UUID
@@ -231,7 +232,7 @@ func (s *Service) registerCash(api huma.API) {
 			}
 			out := &struct{ Body []CashClosure }{Body: []CashClosure{}}
 			err := s.DB.Tx(ctx, p.Tenant(), func(_ pgx.Tx, q *store.Queries) error {
-				rows, err := q.ListCashClosures(ctx, store.ListCashClosuresParams{CompanyID: p.CompanyID, AgencyID: filter, Lim: in.Limit})
+				rows, err := q.ListCashClosures(ctx, store.ListCashClosuresParams{CompanyID: p.CompanyID, AgencyID: filter, Lim: in.Limit, Off: in.Offset})
 				for _, c := range rows {
 					out.Body = append(out.Body, CashClosure{ID: c.ID, AgencyID: c.AgencyID, AgencyName: c.AgencyName,
 						BusinessDate: c.BusinessDate.Format(time.DateOnly), CashIn: c.CashIn, CashOut: c.CashOut,

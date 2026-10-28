@@ -924,9 +924,15 @@ LEFT JOIN parcels p ON p.id = i.parcel_id
 LEFT JOIN baggage_tags t ON t.id = i.baggage_id
 LEFT JOIN bookings b ON b.id = coalesce(i.booking_id, t.booking_id)
 WHERE i.reporter_customer_id = $1
-ORDER BY i.created_at DESC
-LIMIT 100
+ORDER BY i.created_at DESC, i.id DESC
+LIMIT $3 OFFSET $2
 `
+
+type ListCustomerIncidentsParams struct {
+	CustomerID *uuid.UUID
+	Off        int32
+	Lim        int32
+}
 
 type ListCustomerIncidentsRow struct {
 	ID               uuid.UUID
@@ -940,8 +946,8 @@ type ListCustomerIncidentsRow struct {
 	BookingReference *string
 }
 
-func (q *Queries) ListCustomerIncidents(ctx context.Context, reporterCustomerID *uuid.UUID) ([]ListCustomerIncidentsRow, error) {
-	rows, err := q.db.Query(ctx, listCustomerIncidents, reporterCustomerID)
+func (q *Queries) ListCustomerIncidents(ctx context.Context, arg ListCustomerIncidentsParams) ([]ListCustomerIncidentsRow, error) {
+	rows, err := q.db.Query(ctx, listCustomerIncidents, arg.CustomerID, arg.Off, arg.Lim)
 	if err != nil {
 		return nil, err
 	}

@@ -67,7 +67,7 @@ SELECT * FROM invoices WHERE parcel_id = $1 ORDER BY issued_at;
 
 -- name: ListCustomerInvoices :many
 -- Factures d'un client : ses réservations et les colis qu'il a payés.
-SELECT * FROM invoices WHERE customer_id = $1 ORDER BY issued_at DESC LIMIT 200;
+SELECT * FROM invoices WHERE customer_id = @customer_id ORDER BY issued_at DESC, id DESC LIMIT @lim OFFSET @off;
 
 -- name: ListUninvoicedBookingPayments :many
 -- Encaissements d'une réservation pas encore facturés.
