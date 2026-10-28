@@ -201,11 +201,11 @@ func (s *Service) registerPublic(api huma.API) {
 
 	// --- Espace client
 	huma.Register(api, apix.Op("list-my-parcels", http.MethodGet, "/v1/me/parcels", tagPublicParcels, "Mes colis (envoyés et reçus)", apix.Customer),
-		func(ctx context.Context, _ *struct{}) (*struct{ Body []CustomerParcel }, error) {
+		func(ctx context.Context, in *struct{ apix.Page }) (*struct{ Body []CustomerParcel }, error) {
 			p := auth.MustFromContext(ctx)
 			out := &struct{ Body []CustomerParcel }{Body: []CustomerParcel{}}
 			err := s.DB.Tx(ctx, database.System(), func(_ pgx.Tx, q *store.Queries) error {
-				rows, err := q.ListCustomerParcels(ctx, p.ID)
+				rows, err := q.ListCustomerParcels(ctx, store.ListCustomerParcelsParams{CustomerID: p.ID, Lim: in.Limit, Off: in.Offset})
 				for _, r := range rows {
 					out.Body = append(out.Body, CustomerParcel{TrackingNumber: r.TrackingNumber, Status: r.Status, StatusLabel: statusLabels[r.Status],
 						Direction: map[bool]string{true: "sent", false: "received"}[r.IsSender], SenderName: r.SenderName, RecipientName: r.RecipientName,

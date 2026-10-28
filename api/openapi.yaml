@@ -6968,6 +6968,7 @@ components:
         mocked:
           type: boolean
         note:
+          description: "Arrêt imprévu : précision ; départ : motif d'une attente plus longue que prévu"
           maxLength: 500
           type: string
         reason:
@@ -16564,6 +16565,28 @@ paths:
     get:
       description: Réservé aux **clients** connectés.
       operationId: list-my-parcels
+      parameters:
+        - description: Nombre d'éléments (max 100)
+          explode: false
+          in: query
+          name: limit
+          schema:
+            default: 50
+            description: Nombre d'éléments (max 100)
+            format: int32
+            maximum: 100
+            minimum: 1
+            type: integer
+        - description: Décalage pour la pagination
+          explode: false
+          in: query
+          name: offset
+          schema:
+            default: 0
+            description: Décalage pour la pagination
+            format: int32
+            minimum: 0
+            type: integer
       responses:
         "200":
           content:
@@ -16585,6 +16608,12 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorModel"
           description: Forbidden
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unprocessable Entity
         "500":
           content:
             application/problem+json:

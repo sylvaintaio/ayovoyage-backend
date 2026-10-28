@@ -979,9 +979,15 @@ JOIN agencies oa ON oa.id = p.origin_agency_id JOIN cities oc ON oc.id = oa.city
 JOIN agencies da ON da.id = p.destination_agency_id JOIN cities dc ON dc.id = da.city_id
 JOIN companies co ON co.id = p.company_id
 WHERE p.sender_customer_id = $1::uuid OR p.recipient_customer_id = $1::uuid
-ORDER BY p.created_at DESC
-LIMIT 100
+ORDER BY p.created_at DESC, p.id DESC
+LIMIT $3 OFFSET $2
 `
+
+type ListCustomerParcelsParams struct {
+	CustomerID uuid.UUID
+	Off        int32
+	Lim        int32
+}
 
 type ListCustomerParcelsRow struct {
 	ID              uuid.UUID
@@ -997,8 +1003,8 @@ type ListCustomerParcelsRow struct {
 	CompanyName     string
 }
 
-func (q *Queries) ListCustomerParcels(ctx context.Context, customerID uuid.UUID) ([]ListCustomerParcelsRow, error) {
-	rows, err := q.db.Query(ctx, listCustomerParcels, customerID)
+func (q *Queries) ListCustomerParcels(ctx context.Context, arg ListCustomerParcelsParams) ([]ListCustomerParcelsRow, error) {
+	rows, err := q.db.Query(ctx, listCustomerParcels, arg.CustomerID, arg.Off, arg.Lim)
 	if err != nil {
 		return nil, err
 	}

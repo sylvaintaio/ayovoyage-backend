@@ -80,8 +80,8 @@ JOIN agencies oa ON oa.id = p.origin_agency_id JOIN cities oc ON oc.id = oa.city
 JOIN agencies da ON da.id = p.destination_agency_id JOIN cities dc ON dc.id = da.city_id
 JOIN companies co ON co.id = p.company_id
 WHERE p.sender_customer_id = @customer_id::uuid OR p.recipient_customer_id = @customer_id::uuid
-ORDER BY p.created_at DESC
-LIMIT 100;
+ORDER BY p.created_at DESC, p.id DESC
+LIMIT @lim OFFSET @off;
 
 -- name: SetParcelState :one
 UPDATE parcels SET status = @status, current_agency_id = sqlc.narg(current_agency_id), departure_id = sqlc.narg(departure_id)
