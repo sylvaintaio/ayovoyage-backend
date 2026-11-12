@@ -65,6 +65,10 @@ type Provider interface {
 
 var ErrBadSignature = errors.New("signature de webhook invalide")
 
+// ErrProviderBlocked : le fournisseur a répondu par une page de vérification anti-robots (Cloudflare)
+// au lieu de son API. Problème à régler avec le fournisseur, pas dans l'application.
+var ErrProviderBlocked = errors.New("appel bloqué par la protection anti-robots du fournisseur (Cloudflare)")
+
 // ---------------------------------------------------------------- Mock (développement)
 
 // Mock simule un fournisseur : le paiement est validé via POST /v1/dev/payments/{id}/simulate.
@@ -134,6 +138,10 @@ func (f *FedaPay) call(ctx context.Context, method, path string, body any, out a
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 300 {
+		// Page HTML de vérification Cloudflare au lieu du JSON de l'API : journal court et explicite.
+		if resp.Header.Get("Cf-Mitigated") != "" || bytes.Contains(raw, []byte("<title>Just a moment")) {
+			return fmt.Errorf("fedapay %s %s: HTTP %d: %w", method, path, resp.StatusCode, ErrProviderBlocked)
+		}
 		return fmt.Errorf("fedapay %s %s: HTTP %d: %s", method, path, resp.StatusCode, truncate(string(raw), 300))
 	}
 	return json.Unmarshal(raw, out)

@@ -169,7 +169,8 @@ func (s *Service) initiate(ctx context.Context, tenant database.Tenant, owns fun
 			_, err := q.MarkPaymentFailed(ctx, store.MarkPaymentFailedParams{ID: pay.ID, Status: "failed", FailureReason: "Initialisation impossible"})
 			return err
 		})
-		return Payment{}, huma.Error502BadGateway("Le service de paiement est indisponible, réessayez")
+		return Payment{}, huma.Error502BadGateway("Le service de paiement ne répond pas pour le moment. " +
+			"Vos places restent gardées quelques minutes : réessayez dans un instant.")
 	}
 	err = s.DB.Tx(ctx, database.System(), func(_ pgx.Tx, q *store.Queries) error {
 		pay, err = q.SetPaymentCheckout(ctx, store.SetPaymentCheckoutParams{ID: pay.ID, ProviderReference: &res.ProviderReference, CheckoutUrl: &res.CheckoutURL})
