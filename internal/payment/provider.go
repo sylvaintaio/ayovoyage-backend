@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/mail"
 	"strconv"
 	"strings"
 	"time"
@@ -158,15 +159,21 @@ type fedaTransaction struct {
 
 func (f *FedaPay) Initiate(ctx context.Context, req InitiateRequest) (InitiateResult, error) {
 	first, last := splitName(req.CustomerName)
+	// E-mail et numéro seulement s'ils sont renseignés : FedaPay refuse un e-mail vide
+	// (vente à bord, guichet : le voyageur n'a souvent pas d'e-mail).
+	customer := map[string]any{"firstname": first, "lastname": last}
+	if addr, err := mail.ParseAddress(strings.TrimSpace(req.CustomerEmail)); err == nil && strings.Contains(addr.Address, ".") {
+		customer["email"] = addr.Address
+	}
+	if req.CustomerPhone != "" {
+		customer["phone_number"] = map[string]string{"number": req.CustomerPhone, "country": "bj"}
+	}
 	payload := map[string]any{
-		"description":  req.Description,
-		"amount":       req.Amount,
-		"currency":     map[string]string{"iso": req.Currency},
-		"callback_url": req.CallbackURL,
-		"customer": map[string]any{
-			"firstname": first, "lastname": last, "email": req.CustomerEmail,
-			"phone_number": map[string]string{"number": req.CustomerPhone, "country": "bj"},
-		},
+		"description":     req.Description,
+		"amount":          req.Amount,
+		"currency":        map[string]string{"iso": req.Currency},
+		"callback_url":    req.CallbackURL,
+		"customer":        customer,
 		"custom_metadata": map[string]string{"payment_id": req.PaymentID.String()},
 	}
 	var created struct {
